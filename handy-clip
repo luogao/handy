@@ -1,0 +1,147 @@
+#!/usr/bin/env swift
+// handy-clip — 把文本写进剪贴板，并保留覆盖前的全部剪贴板内容。
+//
+//   ./handy-clip "文本"        # 写入 NSPasteboardTypeString；首次写入前备份原内容
+//   ./handy-clip --restore     # 恢复写入前的剪贴板（全部类型），然后清空备份
+//   ./handy-clip --status      # 看有没有备份、备份里有哪些类型
+//   ./handy-clip --snapshot    # 只备份当前剪贴板，不改内容（测试/保护现场用）
+//   ./handy-clip --help
+//
+// 只用 AppKit 的 NSPasteboard：不请求 TCC、不碰 AX / CGEvent。
+// 状态目录默认 ~/Library/Caches/handy，可用 HANDY_CLIP_STATE_DIR 覆盖。
+import AppKit
+import Foundation
+
+let usage = """
+usage: handy-clip <text...>      写入剪贴板（非选项参数按空格拼接）
+       handy-clip --restore      恢复写入前的剪贴板
+       handy-clip --status       查看备份状态
+       handy-clip --snapshot     只备份当前剪贴板
+       handy-clip --help
+"""
+
+func die(_ message: String, code: Int32 = 1) -> Never {
+    FileHandle.standardError.write(("handy-clip: " + message + "\n").data(using: .utf8)!)
+    exit(code)
+}
+
+let stateDir: String = {
+    if let d = ProcessInfo.processInfo.environment["HANDY_CLIP_STATE_DIR"], !d.isEmpty {
+        return (d as NSString).expandingTildeInPath
+    }
+    return NSHomeDirectory() + "/Library/Caches/handy"
+}()
+let backupURL = URL(fileURLWithPath: stateDir).appendingPathComponent("clipboard-backup.plist")
+let fm = FileManager.default
+do {
+    try fm.createDirectory(atPath: stateDir, withIntermediateDirectories: true,
+                           attributes: [.posixPermissions: 0o700])
+} catch {
+    die("无法创建状态目录 \(stateDir)：\(error)")
+}
+
+let pb = NSPasteboard.general
+
+func snapshot() -> [[String: Data]] {
+    var items: [[String: Data]] = []
+    for item in pb.pasteboardItems ?? [] {
+        var entry: [String: Data] = [:]
+        for type in item.types {
+            if let data = item.data(forType: type) {
+                entry[type.rawValue] = data
+            }
+        }
+        items.append(entry)
+    }
+    return items
+}
+
+func saveBackup(_ items: [[String: Data]]) {
+    let payload: [String: Any] = [
+        "savedAt": ISO8601DateFormatter().string(from: Date()),
+        "items": items,
+    ]
+    do {
+        let data = try PropertyListSerialization.data(fromPropertyList: payload,
+                                                      format: .binary, options: 0)
+        try data.write(to: backupURL, options: [.atomic])
+        try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: backupURL.path)
+    } catch {
+        die("备份失败：\(error)")
+    }
+}
+
+func loadBackup() -> [[String: Data]]? {
+    guard let data = try? Data(contentsOf: backupURL),
+          let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
+          let dict = plist as? [String: Any],
+          let items = dict["items"] as? [[String: Data]] else { return nil }
+    return items
+}
+
+func restoreBackup() {
+    guard let items = loadBackup() else {
+        die("没有备份可恢复（先写入一次，或 --snapshot）")
+    }
+    pb.clearContents()
+    if !items.isEmpty {
+        var objects: [NSPasteboardItem] = []
+        for entry in items {
+            let item = NSPasteboardItem()
+            for (type, data) in entry {
+                item.setData(data, forType: NSPasteboard.PasteboardType(type))
+            }
+            objects.append(item)
+        }
+        guard pb.writeObjects(objects) else { die("恢复剪贴板失败") }
+    }
+    try? fm.removeItem(at: backupURL)
+}
+
+let args = Array(CommandLine.arguments.dropFirst())
+guard let first = args.first else {
+    FileHandle.standardError.write(usage.data(using: .utf8)!)
+    exit(1)
+}
+
+switch first {
+case "--help", "-h":
+    print(usage)
+    exit(0)
+
+case "--snapshot":
+    let items = snapshot()
+    saveBackup(items)
+    print("saved \(items.count) item(s)")
+
+case "--status":
+    guard let items = loadBackup() else {
+        print("no backup")
+        exit(0)
+    }
+    let types = Set(items.flatMap { $0.keys }).sorted()
+    print("backup: \(items.count) item(s), types=\(types)")
+    print("path: \(backupURL.path)")
+
+case "--restore":
+    restoreBackup()
+
+default:
+    guard !first.hasPrefix("--") else { die("未知选项 \(first)\n" + usage) }
+    let text = args.joined(separator: " ")
+
+    // 第一次写入前备份；已有备份就保留更早的原始内容，直到 --restore 消费掉。
+    let hadBackup = fm.fileExists(atPath: backupURL.path)
+    if !hadBackup {
+        let items = snapshot()
+        saveBackup(items)
+        FileHandle.standardError.write(
+            ("handy-clip: 已备份原剪贴板（\(items.count) 项）；--restore 可恢复。\n")
+                .data(using: .utf8)!)
+    }
+
+    pb.clearContents()
+    guard pb.setString(text, forType: .string) else { die("写入 NSPasteboard 失败") }
+    guard pb.string(forType: .string) == text else { die("写入后读回不一致") }
+    exit(0)
+}
