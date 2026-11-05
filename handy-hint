@@ -1,0 +1,94 @@
+#!/usr/bin/env swift
+// handy-hint — 控制 handy-menubar 的提示。
+//
+//   ./handy-hint --trigger ["提示文本"]   触发一次提示
+//   ./handy-hint --sound on|off           开/关提示音（设置落盘）
+//   ./handy-hint --status                 查看当前设置
+//   ./handy-hint --help
+//
+// 零权限：用 DistributedNotificationCenter 跟常驻进程通信，不碰 AX / CGEvent。
+import Foundation
+
+let hintName = Notification.Name("com.gaogao.handy.hint")
+let usage = """
+usage: handy-hint --trigger [text]    触发一次提示
+       handy-hint --sound on|off      开关提示音（落盘，重启生效）
+       handy-hint --status            查看设置
+       handy-hint --help
+"""
+
+func die(_ msg: String, _ code: Int32 = 1) -> Never {
+    FileHandle.standardError.write(("handy-hint: " + msg + "\n").data(using: .utf8)!)
+    exit(code)
+}
+
+let env = ProcessInfo.processInfo.environment
+let settingsDir: String = {
+    if let d = env["HANDY_SETTINGS_DIR"], !d.isEmpty {
+        return (d as NSString).expandingTildeInPath
+    }
+    return NSHomeDirectory() + "/Library/Application Support/Handy"
+}()
+let settingsURL = URL(fileURLWithPath: settingsDir).appendingPathComponent("settings.plist")
+let fm = FileManager.default
+
+func writeSound(_ enabled: Bool) {
+    try? fm.createDirectory(atPath: settingsDir, withIntermediateDirectories: true,
+                            attributes: [.posixPermissions: 0o700])
+    let payload: [String: Any] = ["sound": enabled, "updatedAt": ISO8601DateFormatter().string(from: Date())]
+    do {
+        let data = try PropertyListSerialization.data(fromPropertyList: payload, format: .binary, options: 0)
+        try data.write(to: settingsURL, options: [.atomic])
+        try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: settingsURL.path)
+    } catch {
+        die("写入设置失败：\(error)")
+    }
+}
+
+func readSound() -> Bool {
+    guard let data = try? Data(contentsOf: settingsURL),
+          let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
+          let dict = plist as? [String: Any],
+          let value = dict["sound"] as? Bool else { return true }
+    return value
+}
+
+let args = Array(CommandLine.arguments.dropFirst())
+guard let first = args.first else {
+    FileHandle.standardError.write(usage.data(using: .utf8)!)
+    exit(1)
+}
+
+switch first {
+case "--help", "-h":
+    print(usage)
+    exit(0)
+
+case "--trigger":
+    let text = args.count > 1 ? args.dropFirst().joined(separator: " ") : "已复制到剪贴板"
+    let ms = String(format: "%.0f", Date().timeIntervalSince1970 * 1000)
+    DistributedNotificationCenter.default().postNotificationName(
+        hintName, object: nil,
+        userInfo: ["write_ts": ms, "text": text],
+        deliverImmediately: true)
+    // 给 distnoted 一点时间把消息投递出去，再让短命进程退出。
+    Thread.sleep(forTimeInterval: 0.02)
+    exit(0)
+
+case "--sound":
+    guard args.count == 2, ["on", "off"].contains(args[1]) else {
+        die("--sound 需要 on 或 off")
+    }
+    let enabled = args[1] == "on"
+    writeSound(enabled)
+    print("sound=\(enabled ? "on" : "off")")
+    exit(0)
+
+case "--status":
+    print("sound=\(readSound() ? "on" : "off")")
+    print("settings=\(settingsURL.path)")
+    exit(0)
+
+default:
+    die("未知选项 \(first)\n" + usage)
+}

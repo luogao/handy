@@ -1,0 +1,187 @@
+#!/usr/bin/env swift
+// handy-menubar — 常驻菜单栏进程，负责「写入剪贴板后的可见提示」。
+//
+// 只做第 2 段：收到 handy-clip / handy-hint 的触发后，在屏幕右上角显示一个
+// 不抢焦点、不拦截点击的浮层，持续 2 秒；重复触发只复用同一个浮层并重置计时。
+// 提示音默认开，可用 `handy-hint --sound off` 关掉（设置落盘，重启仍生效）。
+//
+// 不用 UNUserNotificationCenter：CLI 进程没有 app bundle / bundle id，注册通知中心
+// 需要打包与签名，POC 阶段直接用 NSStatusItem + NSPanel，零权限、可控时长。
+import AppKit
+import Foundation
+
+let hintName = Notification.Name("com.gaogao.handy.hint")
+let hintTitle = "已复制到剪贴板"
+let visibleSeconds: TimeInterval = 2.0
+
+let fm = FileManager.default
+
+func envDir(_ key: String, default path: String) -> String {
+    if let v = ProcessInfo.processInfo.environment[key], !v.isEmpty {
+        return (v as NSString).expandingTildeInPath
+    }
+    return path
+}
+
+let settingsDir = envDir("HANDY_SETTINGS_DIR",
+                         default: NSHomeDirectory() + "/Library/Application Support/Handy")
+let settingsURL = URL(fileURLWithPath: settingsDir).appendingPathComponent("settings.plist")
+let logDir = envDir("HANDY_LOG_DIR", default: NSHomeDirectory() + "/Library/Caches/handy")
+let logURL = URL(fileURLWithPath: logDir).appendingPathComponent("hint.log")
+
+try? fm.createDirectory(atPath: settingsDir, withIntermediateDirectories: true,
+                        attributes: [.posixPermissions: 0o700])
+try? fm.createDirectory(atPath: logDir, withIntermediateDirectories: true)
+
+let iso: ISO8601DateFormatter = {
+    let f = ISO8601DateFormatter()
+    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return f
+}()
+
+func log(_ message: String) {
+    let line = "\(iso.string(from: Date())) \(message)\n"
+    guard let data = line.data(using: .utf8) else { return }
+    if let handle = try? FileHandle(forWritingTo: logURL) {
+        handle.seekToEndOfFile()
+        handle.write(data)
+        try? handle.close()
+    } else {
+        try? data.write(to: logURL)
+    }
+}
+
+func soundEnabled() -> Bool {
+    guard let data = try? Data(contentsOf: settingsURL),
+          let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
+          let dict = plist as? [String: Any],
+          let value = dict["sound"] as? Bool else { return true }
+    return value
+}
+
+final class HintPanel: NSPanel {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+}
+
+let panelWidth: CGFloat = 264
+let panelHeight: CGFloat = 56
+let panel = HintPanel(
+    contentRect: NSRect(x: 0, y: 0, width: panelWidth, height: panelHeight),
+    styleMask: [.borderless, .nonactivatingPanel],
+    backing: .buffered, defer: false)
+panel.isFloatingPanel = true
+panel.becomesKeyOnlyIfNeeded = true
+panel.level = .floating
+panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
+panel.ignoresMouseEvents = true
+panel.hidesOnDeactivate = false
+panel.isOpaque = false
+panel.backgroundColor = .clear
+panel.hasShadow = true
+
+let effect = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: panelWidth, height: panelHeight))
+effect.material = .hudWindow
+effect.blendingMode = .behindWindow
+effect.state = .active
+effect.wantsLayer = true
+effect.layer?.cornerRadius = 14
+effect.layer?.masksToBounds = true
+effect.autoresizingMask = [.width, .height]
+
+let icon = NSImageView()
+icon.image = NSImage(systemSymbolName: "doc.on.clipboard",
+                     accessibilityDescription: "已复制")
+icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 18, weight: .medium)
+icon.contentTintColor = .labelColor
+icon.translatesAutoresizingMaskIntoConstraints = false
+NSLayoutConstraint.activate([
+    icon.widthAnchor.constraint(equalToConstant: 22),
+    icon.heightAnchor.constraint(equalToConstant: 22),
+])
+
+let label = NSTextField(labelWithString: hintTitle)
+label.font = .systemFont(ofSize: 15, weight: .medium)
+label.textColor = .labelColor
+label.lineBreakMode = .byTruncatingTail
+
+let stack = NSStackView(views: [icon, label])
+stack.orientation = .horizontal
+stack.spacing = 9
+stack.alignment = .centerY
+stack.translatesAutoresizingMaskIntoConstraints = false
+effect.addSubview(stack)
+NSLayoutConstraint.activate([
+    stack.centerXAnchor.constraint(equalTo: effect.centerXAnchor),
+    stack.centerYAnchor.constraint(equalTo: effect.centerYAnchor),
+    stack.leadingAnchor.constraint(greaterThanOrEqualTo: effect.leadingAnchor, constant: 14),
+    stack.trailingAnchor.constraint(lessThanOrEqualTo: effect.trailingAnchor, constant: -14),
+])
+panel.contentView = effect
+
+func placePanel() {
+    let mouse = NSEvent.mouseLocation
+    let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) }
+        ?? NSScreen.main ?? NSScreen.screens.first
+    guard let visible = screen?.visibleFrame else { return }
+    let x = visible.maxX - panelWidth - 24
+    let y = visible.maxY - panelHeight - 12
+    panel.setFrameOrigin(NSPoint(x: x, y: y))
+}
+
+var hideWork: DispatchWorkItem?
+var visibleSince: Date?
+var triggerCount = 0
+var shownCount = 0
+
+func showHint(text: String, writeMs: Double) {
+    triggerCount += 1
+    let now = Date()
+    let deltaMs = now.timeIntervalSince1970 * 1000 - writeMs
+    let sound = soundEnabled()
+    if sound {
+        NSSound(contentsOfFile: "/System/Library/Sounds/Pop.aiff", byReference: true)?.play()
+    }
+
+    label.stringValue = text
+    placePanel()
+    panel.orderFrontRegardless()
+    if visibleSince == nil { shownCount += 1 }
+    visibleSince = visibleSince ?? now
+    log("recv trigger=\(triggerCount) since_write_ms=\(String(format: "%.0f", deltaMs)) "
+        + "sound=\(sound ? "on" : "off") text=\(text)")
+    log("shown trigger=\(triggerCount) panel=1 visible_for=\(visibleSeconds)s")
+
+    hideWork?.cancel()
+    let work = DispatchWorkItem {
+        let hiddenAt = Date()
+        panel.orderOut(nil)
+        let held = visibleSince.map { hiddenAt.timeIntervalSince($0) } ?? 0
+        log("hidden after_ms=\(String(format: "%.0f", held * 1000)) "
+            + "triggers=\(triggerCount) shown_sessions=\(shownCount)")
+        visibleSince = nil
+    }
+    hideWork = work
+    DispatchQueue.main.asyncAfter(deadline: .now() + visibleSeconds, execute: work)
+}
+
+// 菜单栏图标：常驻，让用户知道进程在。
+let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+statusItem.button?.image = NSImage(systemSymbolName: "mic.fill",
+                                   accessibilityDescription: "Handy")
+statusItem.button?.toolTip = "Handy：写入剪贴板后提示"
+
+DistributedNotificationCenter.default().addObserver(
+    forName: hintName, object: nil, queue: .main
+) { note in
+    let info = note.userInfo as? [String: Any]
+    let text = (info?["text"] as? String) ?? hintTitle
+    let ms = Double((info?["write_ts"] as? String) ?? "") ?? Date().timeIntervalSince1970 * 1000
+    showHint(text: text, writeMs: ms)
+}
+
+log("app_start pid=\(getpid()) sound_default=\(soundEnabled() ? "on" : "off") "
+    + "settings=\(settingsURL.path)")
+
+NSApplication.shared.setActivationPolicy(.accessory)
+NSApplication.shared.run()

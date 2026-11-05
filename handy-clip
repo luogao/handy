@@ -142,6 +142,18 @@ default:
 
     pb.clearContents()
     guard pb.setString(text, forType: .string) else { die("写入 NSPasteboard 失败") }
+    let writeMs = String(format: "%.0f", Date().timeIntervalSince1970 * 1000)
     guard pb.string(forType: .string) == text else { die("写入后读回不一致") }
+
+    // 第 2 段：通知常驻的菜单栏进程显示提示；进程没在跑也不影响写入。
+    // 用 DistributedNotificationCenter 而不是直接起窗口，避免每次调用都新开一个浮层。
+    if ProcessInfo.processInfo.environment["HANDY_NO_HINT"] == nil {
+        DistributedNotificationCenter.default().postNotificationName(
+            Notification.Name("com.gaogao.handy.hint"), object: nil,
+            userInfo: ["write_ts": writeMs, "text": "已复制到剪贴板"],
+            deliverImmediately: true)
+        // 给 distnoted 一点时间投递，再让这个短命进程退出。
+        Thread.sleep(forTimeInterval: 0.02)
+    }
     exit(0)
 }
