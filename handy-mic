@@ -1,0 +1,14 @@
+#!/bin/sh
+# handy-mic 的入口：首次调用把 handy-mic.swift 编译到 .build/，之后直接 exec。
+# 不用 `swift handy-mic.swift` 解释执行——每次现编译约 1s，会把「无设备 ≤1s 退出」拖过线。
+set -eu
+dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+src="$dir/handy-mic.swift"
+bin="$dir/.build/handy-mic"
+if [ ! -x "$bin" ] || [ "$src" -nt "$bin" ]; then
+    mkdir -p "$dir/.build"
+    tmp="$bin.tmp.$$"
+    swiftc -O "$src" -o "$tmp"
+    mv "$tmp" "$bin"
+fi
+exec "$bin" "$@"

@@ -1,6 +1,6 @@
-# Handy · 剪贴板两段（写入 + 可见提示）
+# Handy · 三段（写入剪贴板 + 可见提示 + 麦克风录音）
 
-零 TCC：不碰 Accessibility / CGEvent，不申请任何权限。
+前两段零 TCC；第 3 段只申请麦克风一项，不碰 Accessibility / 输入监控 / CGEvent。
 
 ## 第 1 段：写入剪贴板
 
@@ -43,3 +43,19 @@
 - 验收数据与截图见 [HINT.md](HINT.md)。
 
 > 两个入口都是 `#!/usr/bin/env swift` 脚本，每次调用要现编译（约 0.6s）。演示/验收时如果要真正「连按」，可以 `swiftc -O` 预编译一份再调，行为一致。
+
+## 第 3 段：麦克风录音
+
+```bash
+./handy/handy-mic --list            # devices(N)；无设备时 devices(0)，exit 0
+./handy/handy-mic --record 3        # 录 3 秒到 ~/Library/Caches/handy/recordings/*.wav
+./handy/handy-mic --hotkey          # 常驻：按住 ⌃⌥H 录，松开落盘
+./handy/handy-mic --check           # 只注册热键、报告状态后退出（无设备也能验）
+```
+
+- 入口是 shell 包装：首次调用用 `swiftc` 把 `handy-mic.swift` 编译到 `handy/.build/`（约 2s），之后直接跑二进制。
+- 先数设备再要权限：无设备时 `--record` / `--hotkey` 立刻 `exit 3` + `no audio input device`，不调用 `requestAccess`，不会卡 20 秒。
+- 热键用 Carbon `RegisterEventHotKey`（⌃⌥H），不装 CGEventTap、不申请辅助功能 / 输入监控。
+- 录音格式 16kHz / 单声道 / 16-bit PCM WAV；热键模式松手 <200ms 丢弃并提示，>60s 自动停。
+- 退出码：0 成功；1 用法 / IO；3 无输入设备；4 麦克风权限被拒；5 热键注册失败。
+- 本机没有麦克风，**录音本身没验过**，验收边界见 [SEG3.md](../../apps/handy/SEG3.md)。
