@@ -11,4 +11,7 @@ if [ ! -x "$bin" ] || [ "$src" -nt "$bin" ]; then
     swiftc -O "$src" -o "$tmp"
     mv "$tmp" "$bin"
 fi
+# 录音结束后要调同目录的 handy-transcribe；二进制在 .build/ 里，得把目录传进去。
+HANDY_DIR="$dir"
+export HANDY_DIR
 exec "$bin" "$@"

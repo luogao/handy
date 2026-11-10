@@ -5,8 +5,11 @@
 //   ./handy-mic --record 3      录 3 秒到 ~/Library/Caches/handy/recordings/*.wav
 //   ./handy-mic --hotkey        常驻：按住 ⌃⌥H 录、松开落盘（RegisterEventHotKey，不用 CGEventTap）
 //   ./handy-mic --check         只注册热键并报告状态，1 秒内退出（本机没有麦克风也能验）
+//   ./handy-mic --file <wav>    拿现成 WAV 走「录音结束 → 转写 → 剪贴板 → 提示」这条链路
 //   ./handy-mic --help
 //
+// 转写这一段不在本文件里：松手后调 handy-transcribe（同一目录），热键模式和 --file
+// 走的是同一个函数 finishRecording，没有第二份实现。--file 是无麦克风机器上的链路验证入口。
 // 无设备时 --record / --hotkey 立刻 exit 3，**不会**卡在 requestAccess 的 20 秒等待上：
 // 先用 AVCaptureDevice.DiscoverySession 数设备，0 个就直接报错，根本不调用 requestAccess。
 //
@@ -28,8 +31,9 @@ let maxRecordSeconds: TimeInterval = 60    // 热键松开事件丢了也不会�
 let usage = """
 usage: handy-mic --list            列出音频输入设备
        handy-mic --record <秒>     录固定时长到 WAV
-       handy-mic --hotkey          常驻：按住 \(hotkeyCombo) 录，松开落盘
+       handy-mic --hotkey          常驻：按住 \(hotkeyCombo) 录，松开转写并写剪贴板
        handy-mic --check           注册热键并报告状态后退出
+       handy-mic --file <wav>      拿现成 WAV 走同一条链路，输出 elapsed_ms
        handy-mic --help
 """
 
@@ -57,6 +61,53 @@ let iso: ISO8601DateFormatter = {
 
 func log(_ message: String) {
     FileHandle.standardError.write(("\(iso.string(from: Date())) \(message)\n").data(using: .utf8)!)
+}
+
+// MARK: - 录音结束后的链路（转写 → 剪贴板 → 提示）
+
+/// handy/ 目录：包装脚本会传 HANDY_DIR；没传就按二进制在 handy/.build/ 里回退。
+let handyDir: String = {
+    if let d = env["HANDY_DIR"], !d.isEmpty { return d }
+    let exe = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
+    return exe.deletingLastPathComponent().deletingLastPathComponent().path
+}()
+
+/// 转写串行跑：连按两次时不要两个 whisper 抢 Metal。
+let chainQueue = DispatchQueue(label: "com.gaogao.handy.transcribe")
+
+/// 录音结束后唯一的那条链路。热键松手和 --file 都走这里，不许另写一份。
+/// 返回 handy-transcribe 的退出码，耗时由调用方量。
+func runTranscribeChain(wav: URL) -> Int32 {
+    let exe = handyDir + "/handy-transcribe"
+    guard fm.isExecutableFile(atPath: exe) else {
+        log("transcribe_missing path=\(exe)")
+        return 1
+    }
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: exe)
+    // --clip：转写完写剪贴板并触发 handy-hint；stdout 是转写文本，转进 stderr 只当日志，
+    // 免得混进 --file 的 elapsed_ms 输出。
+    process.arguments = [wav.path, "--clip"]
+    process.standardOutput = FileHandle.standardError
+    process.standardError = FileHandle.standardError
+    do {
+        try process.run()
+    } catch {
+        log("transcribe_spawn_failed \(error.localizedDescription)")
+        return 1
+    }
+    process.waitUntilExit()
+    return process.terminationStatus
+}
+
+/// 一段录音收尾：转写 + 剪贴板 + 提示，量「录音结束 → 剪贴板就绪」的耗时。
+func finishRecording(wav: URL) -> (status: Int32, elapsedMs: Double) {
+    let t0 = Date()
+    let status = runTranscribeChain(wav: wav)
+    let elapsed = Date().timeIntervalSince(t0) * 1000
+    log(String(format: "transcribe done status=%d elapsed_ms=%.0f file=%@",
+               status, elapsed, wav.path))
+    return (status, elapsed)
 }
 
 /// whisper 直接能吃的格式：16kHz / 单声道 / 16-bit PCM。
@@ -159,6 +210,8 @@ final class MicController {
         }
         log(String(format: "saved reason=%@ held=%.2fs write_ms=%.0f bytes=%d file=%@",
                    reason, held, writeMs, fileSize(url), url.path))
+        // 转写放到串行后台队列：主线程要继续接下一次按键，不能在这里等 2 秒。
+        chainQueue.async { _ = finishRecording(wav: url) }
     }
 }
 
@@ -244,6 +297,16 @@ func runRecord(seconds: Double) -> Never {
     exit(0)
 }
 
+/// 无麦克风机器上的链路验证口：WAV 已经在了，直接走「录音结束」之后的同一段代码。
+/// stdout 只留一行 elapsed_ms（验收要解析它），其余都进 stderr。
+func runFile(path: String) -> Never {
+    let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+    guard fm.fileExists(atPath: url.path) else { die("文件不存在：\(url.path)") }
+    let result = finishRecording(wav: url)
+    print("elapsed_ms=\(Int(result.elapsedMs.rounded()))")
+    exit(result.status)
+}
+
 func runCheck() -> Never {
     let devices = inputDevices()
     print("devices(\(devices.count))")
@@ -300,6 +363,10 @@ case "--hotkey":
 
 case "--check":
     runCheck()
+
+case "--file":
+    guard args.count == 2 else { die("--file 需要一个 WAV 路径\n" + usage) }
+    runFile(path: args[1])
 
 default:
     die("未知选项 \(first)\n" + usage)
