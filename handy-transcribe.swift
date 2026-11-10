@@ -57,6 +57,7 @@ let usage = """
 usage: handy-transcribe <wav> [--model <path>] [--terms "A|B|C"] [--clip]
                             [--keep-hant] [--debug] [--no-server]
        handy-transcribe --server-status | --stop-server
+       handy-transcribe --log-stats [--since 7d|24h|2026-11-03|<ISO8601>]
 
   <wav>            16kHz/单声道/16bit WAV（其他格式会转）
   --model <path>   whisper 模型路径，默认 \(defaultModel)
@@ -67,6 +68,8 @@ usage: handy-transcribe <wav> [--model <path>] [--terms "A|B|C"] [--clip]
   --no-server      强制旧 whisper-cli 路径（每段重载模型，慢；对照与兜底用）
   --server-status  打印常驻 server 的状态 / 端口 / PID，然后退出
   --stop-server    停掉常驻 server（连同它的看门狗），然后退出
+  --log-stats      统计 whisper-server.log 里的生命周期事件，默认近 7 天
+  --since <when>   配合 --log-stats：7d / 24h / 30m / 2026-11-03 / ISO8601
 """
 
 let env = ProcessInfo.processInfo.environment
@@ -92,6 +95,104 @@ let serverIdleSeconds: Double = {
     guard let raw = env["HANDY_SERVER_IDLE_SECONDS"], let value = Double(raw) else { return 600 }
     return min(max(value, 5), 86400)      // 小于 5s 会在一次推理中途被看门狗误杀
 }()
+
+// MARK: - 事件日志（whisper-server.log）
+//
+// 日志是「可统计的事件流」，不是一次性调试输出：
+//   <ISO8601 毫秒> <文件内字节偏移> handy event=<类型> k=v ...   由本程序写的事件行
+//   <ISO8601 毫秒> <文件内字节偏移> server <原始行>               server 子进程输出（经中继）
+// 追加写、不截断，单文件过 5MB 轮转成 `.1`，当前 + `.1` 共 2 份。
+// 不记识别文本、音频内容、wav 路径（隐私线；见 transcribeViaServer 的 multipart 文件名）。
+
+/// 单文件上限。轮转时机是下一次写日志，所以实际大小会略过头一点。
+let logMaxBytes: Int64 = 5 * 1024 * 1024
+
+let logStampFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.timeZone = TimeZone(secondsFromGMT: 0)
+    formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"
+    return formatter
+}()
+
+func logStamp(_ date: Date = Date()) -> String { logStampFormatter.string(from: date) }
+
+func logEvent(_ body: String, to path: String = serverLogFile) {
+    appendLogLine(path, "handy event=" + body)
+}
+
+/// 本进程只需要检查一次老格式。
+var logFormatChecked = false
+
+/// 老版本（≤ DYVI-117 之前）留下的日志全是没有时间戳的 ggml 行，留在当前文件里会让
+/// `sort -c` 永远失败、前缀计数也对不上。第一次写新格式前把它整份挪成 `.1`
+/// （正好复用轮转的两份上限），当前日志从干净的新格式开始，历史也没丢。
+func migrateLegacyLog(_ path: String) {
+    let fd = open(path, O_RDWR)
+    guard fd >= 0 else { return }
+    defer { close(fd) }
+    guard flock(fd, LOCK_EX) == 0 else { return }
+    defer { flock(fd, LOCK_UN) }
+
+    var locked = stat()
+    guard fstat(fd, &locked) == 0, locked.st_size > 0 else { return }
+    // 只有「锁住的还是当前文件」才动手：别的进程可能刚轮转过或迁移过。
+    var onDisk = stat()
+    guard stat(path, &onDisk) == 0,
+          onDisk.st_ino == locked.st_ino, onDisk.st_dev == locked.st_dev else { return }
+
+    var head = [UInt8](repeating: 0, count: 24)
+    let count = pread(fd, &head, head.count, 0)
+    // 新格式首行一定以 `YYYY-MM-DDT` 开头。
+    let looksNew = count >= 11
+        && (0..<4).allSatisfy { (48...57).contains(head[$0]) }
+        && head[4] == UInt8(ascii: "-") && head[7] == UInt8(ascii: "-")
+        && head[10] == UInt8(ascii: "T")
+    guard !looksNew else { return }
+    rename(path, path + ".1")
+}
+
+/// 追加一行，前缀 `<ISO8601 毫秒> <文件内字节偏移> `。
+///
+/// 第二个字段不是给人看的，是给 `sort -c` 用的：同一毫秒里常有成批的 ggml 行，
+/// 光靠毫秒时间戳排不出来，加上这个严格递增的偏移才能保证整文件始终有序。
+/// 时间戳在**拿到锁之后**才取，所以跨进程（CLI / 看门狗 / 中继）也满足
+/// 「落盘顺序 = 时间戳顺序」，事件间隔可以直接拿 awk 算。
+///
+/// 任何一步失败都只是丢掉这一行：日志写失败不许改变转写结果或退出码。
+func appendLogLine(_ path: String, _ body: String) {
+    if !logFormatChecked {
+        logFormatChecked = true
+        migrateLegacyLog(path)
+    }
+    // 轮转会让 fd 指向被改名后的旧 inode，所以每一步都要重新确认「锁住的还是当前文件」。
+    for _ in 0..<3 {
+        let fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0o644)
+        guard fd >= 0 else { return }
+        guard flock(fd, LOCK_EX) == 0 else { close(fd); return }
+
+        var onDisk = stat()
+        var locked = stat()
+        let stillCurrent = stat(path, &onDisk) == 0 && fstat(fd, &locked) == 0
+            && onDisk.st_ino == locked.st_ino && onDisk.st_dev == locked.st_dev
+        if !stillCurrent {
+            flock(fd, LOCK_UN); close(fd); continue
+        }
+        if locked.st_size > logMaxBytes {
+            // 在锁里改名：后到的进程拿到锁时会发现 inode 变了，不会重复轮转把 .1 抹掉。
+            // rename 原子覆盖旧的 .1，所以当前 + .1 最多两份。
+            rename(path, path + ".1")
+            flock(fd, LOCK_UN); close(fd); continue
+        }
+        let line = logStamp() + " " + String(format: "%08lld", Int64(locked.st_size))
+            + " " + body + "\n"
+        _ = line.utf8CString.withUnsafeBytes { buffer in
+            write(fd, buffer.baseAddress, buffer.count - 1)   // 去掉结尾的 NUL
+        }
+        flock(fd, LOCK_UN); close(fd)
+        return
+    }
+}
 
 func fail(_ message: String, _ code: Int32) -> Never {
     FileHandle.standardError.write(("handy-transcribe: " + message + "\n").data(using: .utf8)!)
@@ -120,6 +221,8 @@ if CommandLine.arguments.count > 1 {
         runInternalServe(Array(CommandLine.arguments.dropFirst(2)))
     case "--internal-watchdog":
         runInternalWatchdog(Array(CommandLine.arguments.dropFirst(2)))
+    case "--internal-relay":
+        runInternalRelay(Array(CommandLine.arguments.dropFirst(2)))
     default:
         break
     }
@@ -137,6 +240,8 @@ var useServer = true
 var printServerStatus = false
 var stopServer = false
 var normalizeSelfTest = false
+var printLogStats = false
+var sinceValue: String?
 
 var args = Array(CommandLine.arguments.dropFirst())
 var index = 0
@@ -174,6 +279,10 @@ while index < args.count {
         stopServer = true
     case "--normalize-selftest":
         normalizeSelfTest = true
+    case "--log-stats":
+        printLogStats = true
+    case "--since":
+        sinceValue = nextValue(arg)
     case "--debug":
         break                      // 已在上面读过
     default:
@@ -184,10 +293,11 @@ while index < args.count {
     index += 1
 }
 
-// 这两个开关不需要 WAV / 模型：出问题时手边往往只有一条命令。
+// 这几个开关不需要 WAV / 模型：出问题时手边往往只有一条命令。
 if stopServer { stopResidentServer() }                 // 内部 exit
 if printServerStatus { reportServerStatus() }          // 内部 exit
 if normalizeSelfTest { runNormalizeSelfTest() }        // 内部 exit
+if printLogStats { runLogStats() }                     // 内部 exit
 
 guard let inputPath = wavPath else { fail("缺 WAV 路径\n" + usage, exitUsage) }
 
@@ -653,18 +763,24 @@ func spawnDetached(_ arguments: [String], log: String?) throws -> pid_t {
     process.executableURL = URL(fileURLWithPath: selfPath)
     process.arguments = arguments
     process.standardInput = FileHandle(forReadingAtPath: "/dev/null")
-    if let log {
-        FileManager.default.createFile(atPath: log, contents: nil)
-        guard let handle = FileHandle(forWritingAtPath: log) else {
-            throw ServerError.badResponse("打不开日志 \(log)")
-        }
-        handle.seekToEndOfFile()
+    var environment = ProcessInfo.processInfo.environment
+    // 追加写，绝不截断。以前这里的 createFile(atPath:contents:nil) 会在每次 spawn 时清空
+    // 文件——只补 seekToEndOfFile 没用，createFile 本身就已经截断了；O_APPEND 才是对的。
+    // 日志打不开时退回 /dev/null：日志写不进去只该丢日志，不能拖累 server 拉起。
+    if let log, let fd = { () -> Int32? in
+        let fd = open(log, O_WRONLY | O_CREAT | O_APPEND, 0o644)
+        return fd >= 0 ? fd : nil
+    }() {
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
         process.standardOutput = handle
         process.standardError = handle
+        // 让 --internal-serve 知道该把子进程输出转发到哪里（中继要用）。
+        environment["HANDY_SERVER_LOG"] = log
     } else {
         process.standardOutput = FileHandle(forWritingAtPath: "/dev/null")
         process.standardError = FileHandle(forWritingAtPath: "/dev/null")
     }
+    process.environment = environment
     do {
         try process.run()
     } catch {
@@ -688,7 +804,13 @@ func prepareServer() -> Int? {
             return meta.port
         }
         // 登记在，但模型不对或进程已死：是我们自己起的才收掉，不动别人的进程。
-        if isAlive(pid_t(meta.pid)) { terminate(pid: pid_t(meta.pid)) }
+        if isAlive(pid_t(meta.pid)) {
+            logEvent("stop reason=replace port=\(meta.port) pid=\(meta.pid)")
+            terminate(pid: pid_t(meta.pid))
+        } else {
+            // 「其他」的退出方式：进程自己没了（崩了 / 被人 kill），登记还在。
+            logEvent("stop reason=gone port=\(meta.port) pid=\(meta.pid)")
+        }
         removeStateFiles()
     } else {
         // 只有旧版端口文件、没有 PID 登记：不知道是谁的，只清文件不杀进程。
@@ -699,14 +821,22 @@ func prepareServer() -> Int? {
         fallbackToCLI("\(defaultServerPort)–\(defaultServerPort + portScanCount - 1) 没有空闲端口")
         return nil
     }
+    let spawnStarted = Date()
     do {
         let pid = try spawnDetached(["--internal-serve", String(port), modelPath, serverBin],
                                     log: serverLogFile)
-        guard waitForServer(port: port, pid: pid, timeout: 5.0) else {
+        let ready = waitForServer(port: port, pid: pid, timeout: 5.0)
+        let startMS = Int(Date().timeIntervalSince(spawnStarted) * 1000)
+        guard ready else {
             terminate(pid: pid)
+            logEvent("spawn_fail port=\(port) pid=\(pid) start_ms=\(startMS) reason=timeout")
             fallbackToCLI("whisper-server 5 秒内没就绪")
             return nil
         }
+        // 启动耗时只有就绪后才知道，所以这行写在 ready 前面、时间戳却是就绪时刻；
+        // 真实的 spawn 时刻 = 时间戳 - start_ms。事件顺序仍是 spawn → ready。
+        logEvent("spawn port=\(port) pid=\(pid) model=\(modelPath) start_ms=\(startMS)")
+        logEvent("ready port=\(port) pid=\(pid) ready_ms=\(startMS) rss_mb=\(residentMB(pid: pid) ?? 0)")
         writeMeta(ServerMeta(port: port, pid: Int32(pid), model: modelPath, variant: serverVariant))
         try? String(port).write(toFile: portFile, atomically: true, encoding: .utf8)
         touchHeartbeat()
@@ -715,9 +845,27 @@ func prepareServer() -> Int? {
                                 String(serverIdleSeconds), cacheDir], log: nil)
         return port
     } catch {
+        let startMS = Int(Date().timeIntervalSince(spawnStarted) * 1000)
+        logEvent("spawn_fail port=\(port) start_ms=\(startMS) reason=\(error)")
         fallbackToCLI("拉起 whisper-server 失败：\(error.localizedDescription)")
         return nil
     }
+}
+
+/// ready 事件里的 RSS：`ps` 的 rss 是 KB。读不到就返回 0（不记 ?，字段保持纯数字）。
+func residentMB(pid: pid_t) -> Int? {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/ps")
+    process.arguments = ["-o", "rss=", "-p", String(pid)]
+    let pipe = Pipe()
+    process.standardOutput = pipe
+    process.standardError = FileHandle(forWritingAtPath: "/dev/null")
+    guard (try? process.run()) != nil else { return nil }
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    guard let kb = Int(String(decoding: data, as: UTF8.self)
+        .trimmingCharacters(in: .whitespacesAndNewlines)), kb > 0 else { return nil }
+    return kb / 1024
 }
 
 func transcribeViaServer(_ wav: URL, prompt: String?, port: Int) throws -> String {
@@ -732,8 +880,10 @@ func transcribeViaServer(_ wav: URL, prompt: String?, port: Int) throws -> Strin
         add("\r\n")
     }
 
+    // 文件名固定成 `audio`：server 会把它原样打进 stderr（`processing 'audio'` / `Received request: audio`），
+    // 传真实分段名（seg00.wav）就漏进了日志。它只用来给服务端的临时文件起名，不影响解码。
     add("--\(boundary)\r\n")
-    add("Content-Disposition: form-data; name=\"file\"; filename=\"\(wav.lastPathComponent)\"\r\n")
+    add("Content-Disposition: form-data; name=\"file\"; filename=\"audio\"\r\n")
     add("Content-Type: audio/wav\r\n\r\n")
     body.append(audio)
     add("\r\n")
@@ -784,6 +934,7 @@ func reportServerStatus() -> Never {
 
 func stopResidentServer() -> Never {
     if let meta = readMeta(at: metaFile) {
+        logEvent("stop reason=--stop-server port=\(meta.port) pid=\(meta.pid)")
         terminate(pid: pid_t(meta.pid))
         removeStateFiles(in: cacheDir, ifPID: meta.pid)
         print("server=stopped port=\(meta.port) pid=\(meta.pid)")
@@ -794,6 +945,122 @@ func stopResidentServer() -> Never {
     exit(0)
 }
 
+// MARK: - 日志统计（--log-stats）
+
+/// 解析 `--since`：`7d` / `24h` / `30m` / `90s` 这类相对值，或 `2026-11-03` / ISO8601 绝对时间。
+func parseSince(_ raw: String?) -> (date: Date, label: String) {
+    guard let raw, !raw.isEmpty else {
+        return (Date().addingTimeInterval(-7 * 86400), "近 7 天")
+    }
+    let lowered = raw.lowercased()
+    if let unit = lowered.last, "smhd".contains(unit),
+       let value = Double(lowered.dropLast()), value >= 0 {
+        let seconds: Double
+        switch unit {
+        case "s": seconds = value
+        case "m": seconds = value * 60
+        case "h": seconds = value * 3600
+        default: seconds = value * 86400
+        }
+        return (Date().addingTimeInterval(-seconds), "近 \(raw)")
+    }
+    let dayFormatter = DateFormatter()
+    dayFormatter.locale = Locale(identifier: "en_US_POSIX")
+    dayFormatter.timeZone = TimeZone(secondsFromGMT: 0)
+    dayFormatter.dateFormat = "yyyy-MM-dd"
+    if let date = dayFormatter.date(from: raw) { return (date, "\(raw) 起") }
+    if let date = ISO8601DateFormatter().date(from: raw) { return (date, "\(raw) 起") }
+    fail("--since 看不懂：\(raw)（要 7d / 24h / 30m / 2026-11-03 / ISO8601）", exitUsage)
+}
+
+func median(_ values: [Int]) -> Double {
+    let sorted = values.sorted()
+    guard !sorted.isEmpty else { return 0 }
+    if sorted.count % 2 == 1 { return Double(sorted[sorted.count / 2]) }
+    return (Double(sorted[sorted.count / 2 - 1]) + Double(sorted[sorted.count / 2])) / 2
+}
+
+/// 一行 → (时间戳, `handy event=...` 之后的部分)。不是事件行（server 转发 / 坏行）返回 nil。
+func parseEvent(_ line: Substring) -> (date: Date, body: String)? {
+    let fields = line.split(separator: " ", maxSplits: 3, omittingEmptySubsequences: true)
+    guard fields.count == 4, fields[2] == "handy",
+          let date = logStampFormatter.date(from: String(fields[0])) else { return nil }
+    return (date, String(fields[3]))
+}
+
+/// 读当前 + `.1` 两份日志，按时间归并后算统计。默认近 7 天，`--since` 可改。
+func runLogStats() -> Never {
+    let (since, label) = parseSince(sinceValue)
+    var events: [(date: Date, body: String)] = []
+    for path in [serverLogFile + ".1", serverLogFile] {   // 旧的一份在前
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { continue }
+        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+            guard let event = parseEvent(line), event.date >= since else { continue }
+            events.append(event)
+        }
+    }
+    events.sort { $0.date < $1.date }      // 两份文件拼接后按时间归并
+
+    var spawns = 0, idleExits = 0, stops = 0, requests = 0, serverRequests = 0, cliRequests = 0
+    var readySamples: [Int] = []
+    var coldSamples: [Int] = []            // spawn 之后第一个 request：等就绪的 start_ms + decode_ms
+    var warmSamples: [Int] = []            // 同一 spawn 里后续 request 的 decode_ms
+    var coldCount = 0
+    var waitingFirstRequest = false
+    var pendingStartMS = 0                 // 当前这次 spawn 的启动耗时，等第一个 request 来结账
+    for event in events {
+        let tokens = event.body.split(separator: " ")
+        guard let head = tokens.first, head.hasPrefix("event=") else { continue }
+        var values: [String: String] = [:]
+        for token in tokens.dropFirst() {
+            let pair = token.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            if pair.count == 2 { values[String(pair[0])] = String(pair[1]) }
+        }
+        switch head.dropFirst("event=".count) {
+        case "spawn":
+            spawns += 1
+            waitingFirstRequest = true
+            pendingStartMS = Int(values["start_ms"] ?? "") ?? 0
+        case "ready":
+            if let ms = Int(values["ready_ms"] ?? "") { readySamples.append(ms) }
+        case "idle_exit":
+            idleExits += 1
+        case "stop":
+            stops += 1
+        case "request":
+            requests += 1
+            if values["path"] == "server" { serverRequests += 1 } else { cliRequests += 1 }
+            let wasFirst = waitingFirstRequest
+            waitingFirstRequest = false
+            if wasFirst { coldCount += 1 }
+            // 冷启动增量只比单段请求：多段会把分段数混进耗时里，比出来的差不是冷启动的锅。
+            // 冷启动的账要把「等 server 就绪」算进来——那才是用户在冷启动时多付的钱。
+            guard values["segs"] == "1", let decode = Int(values["decode_ms"] ?? "") else { break }
+            if wasFirst { coldSamples.append(pendingStartMS + decode) } else { warmSamples.append(decode) }
+        default:
+            break
+        }
+    }
+
+    let readyText = readySamples.isEmpty ? "-"
+        : "\(Int(median(readySamples).rounded()))ms"
+    let incrementText: String
+    if coldSamples.isEmpty || warmSamples.isEmpty {
+        incrementText = "-"
+    } else {
+        incrementText = String(format: "%+.2fs",
+                               (median(coldSamples) - median(warmSamples)) / 1000)
+    }
+    print("spawn 次数：\(spawns)（\(label)）")
+    print("idle_exit 次数：\(idleExits)")
+    print("平均就绪耗时：\(readyText)")
+    print("冷启动（spawn 后首个 request）次数：\(coldCount)")
+    print("平均冷启动增量：\(incrementText)")
+    print("stop 次数：\(stops)　request 次数：\(requests)（server \(serverRequests) / cli \(cliRequests)）")
+    print("日志：\(serverLogFile)（+ .1）")
+    exit(0)
+}
+
 /// spawn 出来的自己：setsid 后 exec whisper-server。exec 不换 PID，
 /// 所以父进程拿到的 processIdentifier 就是 server 的 PID。
 func runInternalServe(_ arguments: [String]) -> Never {
@@ -801,6 +1068,13 @@ func runInternalServe(_ arguments: [String]) -> Never {
     let model = arguments[1]
     let server = arguments[2]
     _ = setsid()
+    // 子进程的 stdout/stderr 也要有时间戳，否则整份日志就排不了序。
+    // 做法：spawn 一个中继进程读管道，本进程照旧 exec 成 server——exec 不换 PID，
+    // 所以 --server-status / 看门狗 / terminate 拿到的仍然是 server 自己的 pid。
+    if let logPath = env["HANDY_SERVER_LOG"], !logPath.isEmpty, pipeServerOutput(to: logPath) {
+        // 中继没了（崩溃 / 被杀）也只丢日志：写管道返回 EPIPE，别把 server 一起带走。
+        signal(SIGPIPE, SIG_IGN)
+    }
     // 别跟着 CLI 传 -bs 8：实测把解码拖慢一倍（0.09 → 0.19 s/秒音频），24s 三段要 4.6s，破 3.5s 线。
     // CLI 路径同样用 greedy（见 transcribeSegment），两条路径才能逐字一致。
     // 也别指望 -nf：whisper.cpp 1.9.2 的 whisper-server 只解析/打印 no_fallback，
@@ -816,6 +1090,92 @@ func runInternalServe(_ arguments: [String]) -> Never {
     fail("无法启动 whisper-server：\(server)", exitWhisper)
 }
 
+/// 把本进程的 stdout/stderr 接到管道上，再 spawn 一个中继进程把管道内容逐行写进日志。
+/// 返回 true 表示已接管；false 时调用方保持 spawn 时接的日志文件（降级：那些行没有时间戳）。
+///
+/// 为什么不是线程：exec 之后本进程就只剩 whisper-server，没有任何 Swift 代码能继续读管道。
+/// 为什么不是 fork：Swift 的 Darwin overlay 明确禁用它（多线程下不安全），posix_spawn 是正路。
+func pipeServerOutput(to logPath: String) -> Bool {
+    var fds: [Int32] = [-1, -1]
+    guard pipe(&fds) == 0 else { return false }
+
+    var actions: posix_spawn_file_actions_t?
+    posix_spawn_file_actions_init(&actions)
+    // 中继必须自己关掉写端，否则它永远等不到 EOF（server 退出后管道仍有写端存在）。
+    posix_spawn_file_actions_addclose(&actions, fds[1])
+    defer { posix_spawn_file_actions_destroy(&actions) }
+
+    // 参数里只有 fd 号，日志路径走 HANDY_SERVER_LOG：argv 不出现 "whisper-server" 字样，
+    // 免得 `pgrep -fl whisper-server` 数进程时把中继算进去。
+    // 注意不能用顶层 let selfPath：--internal-serve 在顶层语句流里先于它初始化，
+    // 取到的是零值（第一次实现就崩在这儿）。argv[0] 就是父进程 spawn 时给的可执行路径。
+    let executable = CommandLine.arguments[0]
+    let argv: [UnsafeMutablePointer<CChar>?] = [
+        strdup(executable), strdup("--internal-relay"), strdup(String(fds[0])), nil,
+    ]
+    defer { for pointer in argv where pointer != nil { free(pointer) } }
+
+    var relayPID: pid_t = 0
+    let spawned = posix_spawn(&relayPID, executable, &actions, nil, argv, environ)
+    if spawned == 0 {
+        close(fds[0])
+        dup2(fds[1], STDOUT_FILENO)
+        dup2(fds[1], STDERR_FILENO)
+        if fds[1] > STDERR_FILENO { close(fds[1]) }
+        return true
+    }
+    // spawn 失败：关掉管道，退回 spawn 时接的文件。
+    close(fds[0])
+    close(fds[1])
+    return false
+}
+
+/// spawn 出来的自己：从继承来的 fd 读 server 输出，逐行加时间戳写日志。
+/// 日志路径走环境变量（不放进 argv），理由见 pipeServerOutput。
+func runInternalRelay(_ arguments: [String]) -> Never {
+    guard arguments.count == 1, let fd = Int32(arguments[0]), fd >= 0,
+          let logPath = env["HANDY_SERVER_LOG"], !logPath.isEmpty else { exit(0) }
+    relayServerOutput(readFD: fd, logPath: logPath)
+}
+
+/// 中继循环。EOF（server 退出）后把半行也写掉再走。
+///
+/// 已知口径：server 的 stderr 在非 tty 下被 libc 整块缓冲（约 4KB 一块），所以转发行的
+/// 时间戳是「缓冲区刷出时刻」，不是 server 写下那行的时刻；成批出现是正常的。
+/// 不用 pty 换取逐行刷新：中继若意外退出，pty 写端会堵死 server，而管道写端只会 EPIPE，
+/// 顶多丢日志——日志子系统绝不允许把转写拖下水。事件行（spawn/ready/…）由本程序直接写，
+/// 时刻永远准确。
+func relayServerOutput(readFD: Int32, logPath: String) -> Never {
+    var pending: [UInt8] = []
+    var chunk = [UInt8](repeating: 0, count: 8192)
+    while true {
+        let count = read(readFD, &chunk, chunk.count)
+        if count <= 0 { break }
+        pending.append(contentsOf: chunk[0..<count])
+        while let newline = pending.firstIndex(of: 0x0A) {
+            let line = Array(pending[..<newline])
+            pending.removeFirst(newline + 1)
+            appendLogLine(logPath, "server " + sanitizedServerLine(line))
+        }
+    }
+    if !pending.isEmpty {
+        appendLogLine(logPath, "server " + sanitizedServerLine(pending))
+    }
+    _exit(0)
+}
+
+/// server 的 stderr 会打上传文件名（`operator(): processing 'audio'`）。文件名已经固定成 audio，
+/// 这里再兜一道底：任何 .wav 文件名和临时目录路径都换成 `<audio>` / `<path>`。
+/// 隐私线要求日志里 grep 不到 `.wav` 或 `/tmp/`；宁可少一行细节，也不让路径漏出来。
+func sanitizedServerLine(_ bytes: [UInt8]) -> String {
+    var text = String(decoding: bytes, as: UTF8.self)
+    text = text.replacingOccurrences(of: #"\S*\.wav\b"#, with: "<audio>",
+                                     options: .regularExpression)
+    text = text.replacingOccurrences(of: #"/(?:tmp|var/folders)/\S*"#, with: "<path>",
+                                     options: .regularExpression)
+    return text
+}
+
 /// spawn 出来的自己：空闲超过 idle 就收掉 server。参数里刻意不出现 "whisper-server"
 /// 字样——验收用 `pgrep -fl whisper-server` 数进程，看门狗不能把自己算进去。
 func runInternalWatchdog(_ arguments: [String]) -> Never {
@@ -826,11 +1186,16 @@ func runInternalWatchdog(_ arguments: [String]) -> Never {
     let dir = arguments[2]
     let metaPath = dir + "/whisper-server.json"
     let heartbeatPath = dir + "/whisper-server.heartbeat"
+    let logPath = dir + "/whisper-server.log"
     _ = setsid()
+    let started = Date()      // 看门狗紧跟 server 拉起，这个时刻≈ server 启动时刻
     while true {
         sleep(2)
         guard let meta = readMeta(at: metaPath), meta.pid == rawPID else { exit(0) }
         guard isAlive(pid) else {
+            // 「其他」的退出方式：server 自己没了。看门狗是唯一还会注意到这件事的进程。
+            logEvent("stop reason=gone pid=\(rawPID) alive_s=\(Int(Date().timeIntervalSince(started)))",
+                     to: logPath)
             removeStateFiles(in: dir, ifPID: rawPID)
             exit(0)
         }
@@ -842,6 +1207,8 @@ func runInternalWatchdog(_ arguments: [String]) -> Never {
             age = .infinity      // 心跳文件被人删了，按空闲处理
         }
         if age >= idle {
+            logEvent("idle_exit pid=\(rawPID) idle_s=\(Int(age)) alive_s=\(Int(Date().timeIntervalSince(started)))",
+                     to: logPath)
             terminate(pid: pid)
             removeStateFiles(in: dir, ifPID: rawPID)
             exit(0)
@@ -1122,9 +1489,11 @@ for (i, segment) in segments.enumerated() {
 }
 
 /// 分段顺序 + 热词 + 接上文的策略只有这一份；换引擎（server / cli）不换策略。
-func transcribeAll(_ engine: (URL, String?, Int) throws -> String) throws -> [String] {
+/// 返回拼好的分段文本和引擎总耗时（ms）——后者就是 request 事件里的 decode_ms。
+func transcribeAll(_ engine: (URL, String?, Int) throws -> String) throws -> ([String], Int) {
     var pieces: [String] = []
     var previous = ""
+    var decodeMS = 0
     for (i, segURL) in segmentURLs.enumerated() {
         // 首段只放热词；后续段再带上一段末尾 40 字，断句处的错少一半（POC 实测）。
         var prompt = hotwords
@@ -1134,24 +1503,29 @@ func transcribeAll(_ engine: (URL, String?, Int) throws -> String) throws -> [St
         // 句号封口：热词 prompt 不封口时，模型会把它当成待续写的内容原样复读，
         // 整段输出就是热词表本身（DYVI-114 H4，12/16 秒音频 + 5 个热词可稳定复现）。
         if !prompt.isEmpty { prompt += "。" }
+        let engineStarted = Date()
         let raw = try engine(segURL, prompt.isEmpty ? nil : prompt, i)
+        decodeMS += Int(Date().timeIntervalSince(engineStarted) * 1000)
         let simplified = normalizeText(raw)
         note(String(format: "seg%d %.2f-%.2fs chars=%d",
                     i, segments[i].start, segments[i].end, simplified.count))
         pieces.append(simplified)
         previous = simplified
     }
-    return pieces
+    return (pieces, decodeMS)
 }
 
 var pieces: [String] = []
 var transcribed = false
+var decodeMS = 0
+var requestPath = "cli"
 if let port = prepareServer() {
     do {
-        pieces = try transcribeAll { wav, prompt, _ in
+        (pieces, decodeMS) = try transcribeAll { wav, prompt, _ in
             try transcribeViaServer(wav, prompt: prompt, port: port)
         }
         transcribed = true
+        requestPath = "server"
     } catch {
         // 跑到一半 server 没了：整份结果丢掉重跑 CLI，别把两条路径的段拼在一起。
         fallbackToCLI("server 请求失败：\(error)")
@@ -1162,7 +1536,7 @@ if !transcribed {
         fail("找不到 whisper-cli（brew install whisper-cpp，且要在 PATH 里）", exitWhisper)
     }
     do {
-        pieces = try transcribeAll { wav, prompt, i in
+        (pieces, decodeMS) = try transcribeAll { wav, prompt, i in
             let outBase = workDir.appendingPathComponent(String(format: "seg%02d", i))
             return try transcribeSegment(wav, prompt: prompt, outBase: outBase, cli: cli)
         }
@@ -1178,6 +1552,11 @@ if debug, !substitutions.isEmpty {
 
 let text = corrected.trimmingCharacters(in: .whitespacesAndNewlines)
 guard !text.isEmpty else { fail("转写结果为空", exitUsage) }
+
+// 一次转写一条 request 事件（不是每段一条）：统计要的是「这一次调用花了多久、几个字」。
+// 只记元数据——不记文本、不记音频、不记 wav 路径。
+logEvent("request path=\(requestPath) segs=\(segments.count) audio_ms=\(Int(duration * 1000)) "
+    + "decode_ms=\(decodeMS) chars=\(text.count)")
 
 if writeClipboard {
     let clip = handyDir + "/handy-clip"

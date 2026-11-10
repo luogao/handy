@@ -72,6 +72,8 @@
 ./handy/handy-transcribe 录音.wav --no-server          # 强制旧 whisper-cli 路径（对照 / 兜底）
 ./handy/handy-transcribe --server-status               # server 状态 / 端口 / PID（停止时 exit 1）
 ./handy/handy-transcribe --stop-server                 # 停掉常驻 server + 看门狗
+./handy/handy-transcribe --log-stats                   # 近 7 天的 spawn / 就绪 / 冷启动统计
+./handy/handy-transcribe --log-stats --since 24h       # 也认 30m / 2026-11-03 / ISO8601
 ./handy/handy-mic --file 录音.wav                      # 走「录音结束」之后的同一条链，打印 elapsed_ms
 ```
 
@@ -84,6 +86,11 @@
 - 生命周期：server 与看门狗都 `setsid` 脱离父进程，空闲 **10 分钟**自退（`HANDY_SERVER_IDLE_SECONDS`
   可覆盖，最小 5s）；`--stop-server` 立即停。登记、日志在 `~/Library/Caches/handy/whisper-server.{json,port,log,heartbeat}`，
   目录可用 `HANDY_LOG_DIR` 覆盖。server 崩了看门狗会清掉登记，下次调用重新拉起。
+- **日志是可统计的事件流**（不是一次性调试输出）：每行前缀 `2026-11-10T14:20:31.482Z`，
+  追加写、不截断，单文件超 5MB 轮转成 `.1`（当前 + `.1` 两份封顶）。事件行以 `handy event=` 标记，
+  `spawn` / `ready` / `request` / `idle_exit` / `stop` 各带元数据；server 自己的 stdout/stderr
+  由中继进程逐行加 `server` 前缀转发（非 tty 的 stderr 被 libc 整块缓冲，所以转发行是成批到达的）。
+  只记元数据，**不记识别文本、音频内容和 wav 路径**。统计口径：`--log-stats`。
 - 解码参数：两条路径统一 greedy，同一段 wav 逐字一致。CLI **显式**传 `-bs 1 -bo 2`——
   `whisper-cli` 的默认是 `-bs 5`（beam search），不写就还是 beam，长音频会和 server 分叉；
   `-bs 1` 走 cli.cpp 的 greedy 分支，`-bo 2` 对齐 server 的 best_of。不用 `-bs 8`：server 带
