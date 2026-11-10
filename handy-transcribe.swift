@@ -9,14 +9,21 @@
 // 两条转写路径，默认优先常驻 server：
 //   server：起一个 whisper-server（模型只加载一次），每段 POST /inference；
 //   cli   ：每段 spawn 一次 whisper-cli，每段都重载一次模型（旧路径，--no-server）。
-// 为什么要有 server 路径：12–24 秒的口述切 2–3 段，CLI 每段带一次 ~0.75s 的模型加载，
-// 端到端 3.16–3.59s 破 3.0s 线；server 把这份开销摊到一次。分段/热词/接上文的策略不变。
+// 为什么要有 server 路径：CLI 每跑一段都要重载一次模型（~0.75s），超过 28 秒的口述
+// 还要切段，端到端 3.16–3.59s 破 3.0s 线；server 把这份开销摊到一次。
+// 分段/热词/接上文的策略不变。
 //
-// 策略照 DYVI-106 实测出来的那一行（POC.md 末节 `seg+hotword+dict`）：
-//   1. 8–12 秒一段，切点取静音中点；窗口里找不到静音就硬切在 ~11 秒
-//   2. 每段 --prompt = 热词表 + 上一段末尾 40 字（首段只放热词）
+// 策略（DYVI-106 的 `seg+hotword+dict` + DYVI-114 实测的长度上限）：
+//   1. ≤28 秒整段一次请求；超过才切，切点取 [cursor+8, cursor+28] 内的静音中点，
+//      取最靠近 cursor+25 的那个，找不到就硬切在 +25 秒
+//   2. 每段 --prompt = 热词表 + 上一段末尾 40 字（首段只放热词），整条 prompt 以「。」收尾
 //   3. 结果过一遍词典校正（recover_terms 的两档匹配）
-// 为什么必须分段：单个 30 秒窗口塞热词 prompt 会把整段写成 prompt 原文（已复现）。
+// 为什么 ≤28 秒不切：每多一次 /inference 就多付一次 30 秒窗口的编码（本机 ~0.55s）。
+// 24 秒音频单请求 1.61s，切三段 2.79s；12.68 秒 1.12s vs 1.70s（DYVI-114 H1）。
+// 为什么超过 28 秒必须切：30 秒是 whisper 的硬窗口，31 秒单请求会跳过后半段
+// （DYVI-114 H2：31.0/40.0 秒单请求「顺便看看30秒以上的长句子…太长而」整段被吞）。
+// 为什么 prompt 以「。」收尾：热词 prompt 不封口时模型会把它当待续写内容原样复读
+// （DYVI-114 H4：12/16 秒音频 + 5 个热词，整段输出就是热词表本身）；句号封口后复读消失。
 //
 // 分段在进程内用 AVAudioFile 做，运行时不调用 ffmpeg / ffprobe——POC 的 run.py
 // 靠 ffmpeg silencedetect 分段，那是度量台的口径；产品链路不能给用户装 ffmpeg 的
@@ -35,8 +42,8 @@ let sampleRate: Double = 16000
 let silenceThresholdDB: Float = -35      // 与 POC 的 ffmpeg silencedetect 同口径
 let silenceMinDuration: Double = 0.25
 let segmentMinSeconds: Double = 8
-let segmentMaxSeconds: Double = 12
-let segmentTargetSeconds: Double = 11
+let segmentMaxSeconds: Double = 28      // 留 2 秒余量给 whisper 的 30 秒硬窗口
+let segmentTargetSeconds: Double = 25
 let carryCharacters = 40
 
 let defaultModel = NSHomeDirectory() + "/.cache/whisper.cpp/ggml-medium-q5_0.bin"
@@ -366,8 +373,10 @@ struct Segment {
     var duration: Double { end - start }
 }
 
-/// 照 run.py `split_audio`：切点优先取窗口内的静音中点，取最靠近「当前位置 +11s」的那个；
-/// 没有静音就硬切在 +11s。硬切可能切在词中间，这是已知代价（POC.md「这版方案还差什么」）。
+/// 照 run.py `split_audio`：切点优先取窗口内的静音中点，取最靠近「当前位置 +25s」的那个；
+/// 没有静音就硬切在 +25s。硬切可能切在词中间，这是已知代价（POC.md「这版方案还差什么」）。
+/// 循环条件是 `duration - cursor > segmentMaxSeconds`，所以 ≤28s 的音频一段都不切，
+/// 整段走一次请求（DYVI-114 H1：请求次数才是热态时延的瓶颈）。
 func planSegments(duration: Double, silences: [(start: Double, end: Double)]) -> [Segment] {
     guard duration > 0 else { return [] }
     let mids = silences.map { ($0.start + $0.end) / 2 }
@@ -1122,6 +1131,9 @@ func transcribeAll(_ engine: (URL, String?, Int) throws -> String) throws -> [St
         if !previous.isEmpty {
             prompt += (prompt.isEmpty ? "" : " ") + String(previous.suffix(carryCharacters))
         }
+        // 句号封口：热词 prompt 不封口时，模型会把它当成待续写的内容原样复读，
+        // 整段输出就是热词表本身（DYVI-114 H4，12/16 秒音频 + 5 个热词可稳定复现）。
+        if !prompt.isEmpty { prompt += "。" }
         let raw = try engine(segURL, prompt.isEmpty ? nil : prompt, i)
         let simplified = normalizeText(raw)
         note(String(format: "seg%d %.2f-%.2fs chars=%d",

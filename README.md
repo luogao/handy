@@ -98,10 +98,13 @@
 
 - 链路：`handy-mic --hotkey` 松手落盘 → `handy-transcribe --clip` → `handy-clip` 写剪贴板 → `handy-hint` 弹提示。
   热键模式和 `--file` 调的是同一个函数（`handy-mic.swift` 的 `finishRecording`），没有第二份实现。
-- 分段：8–12 秒一段，切点取静音中点（10ms 帧 RMS、-35dB、≥0.25s），窗口里没有静音就硬切在 ~11 秒。
+- 分段：**≤28 秒整段一次请求**；超过才切，切点取静音中点（10ms 帧 RMS、-35dB、≥0.25s），
+  窗口里没有静音就硬切在 ~25 秒。30 秒是 whisper 的硬窗口，31 秒单请求会丢后半段（DYVI-114 实测）。
+  每多一次请求就多付一次 30 秒窗口的编码（本机 ~0.55s），所以能不切就不切。
   分段在进程内用 `AVAudioFile` 做，**不依赖 ffmpeg / ffprobe**（POC 的 `run.py` 用 ffmpeg 是度量台口径）。
-- 每段 `--prompt` = 热词表 + 上一段末尾 40 字（首段只放热词），`-l zh`。
-  长音频单窗口加 prompt 会把整段写成 prompt 原文（POC.md 已复现），所以必须先分段。
+- 每段 `--prompt` = 热词表 + 上一段末尾 40 字（首段只放热词），整条 prompt 以「。」收尾，`-l zh`。
+  不封口时模型会把热词 prompt 当待续写内容原样复读（DYVI-114 实测：12/16 秒音频 + 5 个热词，
+  整段输出就是热词表本身）；句号封口后复读消失，长句热词命中不变。
 - 词典校正：两档匹配（先只校大小写，再音近形变 相似度 ≥0.60、首字母不同不套）。
   词表默认读 `~/Library/Application Support/Handy/terms.txt`（一行一个，`#` 开头是注释），`--terms "A|B|C"` 覆盖。
 - 归一：落盘前统一走 `normalizeText`——系统 ICU 的 `Hant-Hans` 转简体（`--keep-hant` 关掉）、
