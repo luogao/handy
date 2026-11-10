@@ -2,8 +2,15 @@
 // handy-transcribe — 第 4 段：WAV → 分段转写 → 词典校正 → （可选）剪贴板。
 //
 //   ./handy-transcribe <wav> [--model <path>] [--terms "A|B|C"] [--clip] [--keep-hant]
+//                       [--no-server] [--server-status] [--stop-server]
 //
 // 最终文本打到 stdout；--clip 时再交给 handy-clip 写剪贴板并弹提示。
+//
+// 两条转写路径，默认优先常驻 server：
+//   server：起一个 whisper-server（模型只加载一次），每段 POST /inference；
+//   cli   ：每段 spawn 一次 whisper-cli，每段都重载一次模型（旧路径，--no-server）。
+// 为什么要有 server 路径：12–24 秒的口述切 2–3 段，CLI 每段带一次 ~0.75s 的模型加载，
+// 端到端 3.16–3.59s 破 3.0s 线；server 把这份开销摊到一次。分段/热词/接上文的策略不变。
 //
 // 策略照 DYVI-106 实测出来的那一行（POC.md 末节 `seg+hotword+dict`）：
 //   1. 8–12 秒一段，切点取静音中点；窗口里找不到静音就硬切在 ~11 秒
@@ -19,6 +26,7 @@
 // 2 和 3 排在最前：缺东西要在 1 秒内说清楚，不要等读完音频才报错。
 
 import AVFoundation
+import Darwin
 import Foundation
 
 // MARK: - 常量
@@ -40,7 +48,8 @@ let exitWhisper: Int32 = 3
 
 let usage = """
 usage: handy-transcribe <wav> [--model <path>] [--terms "A|B|C"] [--clip]
-                            [--keep-hant] [--debug]
+                            [--keep-hant] [--debug] [--no-server]
+       handy-transcribe --server-status | --stop-server
 
   <wav>            16kHz/单声道/16bit WAV（其他格式会转）
   --model <path>   whisper 模型路径，默认 \(defaultModel)
@@ -48,10 +57,34 @@ usage: handy-transcribe <wav> [--model <path>] [--terms "A|B|C"] [--clip]
   --clip           转写完写剪贴板并弹提示（交给 handy-clip）
   --keep-hant      保留 whisper 输出的繁体，默认转成简体
   --debug          whisper 的日志不再丢弃，打到 stderr
+  --no-server      强制旧 whisper-cli 路径（每段重载模型，慢；对照与兜底用）
+  --server-status  打印常驻 server 的状态 / 端口 / PID，然后退出
+  --stop-server    停掉常驻 server（连同它的看门狗），然后退出
 """
 
 let env = ProcessInfo.processInfo.environment
 let debug = CommandLine.arguments.contains("--debug")
+
+// MARK: - 常驻 server 的文件与默认值
+
+/// 与 handy-clip / handy-hint 共用 `~/Library/Caches/handy`；HANDY_LOG_DIR 可覆盖（测试并行时用）。
+let cacheDir: String = {
+    if let d = env["HANDY_LOG_DIR"], !d.isEmpty { return (d as NSString).expandingTildeInPath }
+    return NSHomeDirectory() + "/Library/Caches/handy"
+}()
+let portFile = cacheDir + "/whisper-server.port"
+let metaFile = cacheDir + "/whisper-server.json"
+let heartbeatFile = cacheDir + "/whisper-server.heartbeat"
+let serverLogFile = cacheDir + "/whisper-server.log"
+let defaultServerPort = 8931
+let portScanCount = 20
+/// 起 server 的参数版本。改 runInternalServe 里的参数就换这个值，老进程会在下次调用时被换掉。
+let serverVariant = "whisper-server/v1"
+/// 空闲自退。验收要把 600s 压到 20s，所以走环境变量而不是命令行开关。
+let serverIdleSeconds: Double = {
+    guard let raw = env["HANDY_SERVER_IDLE_SECONDS"], let value = Double(raw) else { return 600 }
+    return min(max(value, 5), 86400)      // 小于 5s 会在一次推理中途被看门狗误杀
+}()
 
 func fail(_ message: String, _ code: Int32) -> Never {
     FileHandle.standardError.write(("handy-transcribe: " + message + "\n").data(using: .utf8)!)
@@ -70,6 +103,21 @@ let handyDir: String = {
     return exe.deletingLastPathComponent().deletingLastPathComponent().path
 }()
 
+// MARK: - 内部模式（给 spawn 出来的自己用，不在 usage 里）
+
+// 两个内部模式都先 setsid：server 与看门狗要活过父进程，也不能被终端的 Ctrl-C
+// 打到（macOS 没有 util-linux 的 setsid 命令，但 libc 的 setsid(2) 在）。
+if CommandLine.arguments.count > 1 {
+    switch CommandLine.arguments[1] {
+    case "--internal-serve":
+        runInternalServe(Array(CommandLine.arguments.dropFirst(2)))
+    case "--internal-watchdog":
+        runInternalWatchdog(Array(CommandLine.arguments.dropFirst(2)))
+    default:
+        break
+    }
+}
+
 // MARK: - 参数
 
 var wavPath: String?
@@ -78,6 +126,9 @@ var termsOverride: [String]?
 var writeClipboard = false
 var keepHant = false
 var termsFile = defaultTermsFile
+var useServer = true
+var printServerStatus = false
+var stopServer = false
 
 var args = Array(CommandLine.arguments.dropFirst())
 var index = 0
@@ -94,7 +145,9 @@ while index < args.count {
         print(usage)
         exit(0)
     case "--model":
-        modelPath = (nextValue(arg) as NSString).expandingTildeInPath
+        // 标准化：meta 里记的模型路径要和这次比，`./x` 与绝对路径不能算两个模型。
+        let expanded = (nextValue(arg) as NSString).expandingTildeInPath
+        modelPath = URL(fileURLWithPath: expanded).standardizedFileURL.path
     case "--terms":
         termsOverride = nextValue(arg).split(separator: "|")
             .map { $0.trimmingCharacters(in: .whitespaces) }
@@ -105,6 +158,12 @@ while index < args.count {
         writeClipboard = true
     case "--keep-hant":
         keepHant = true
+    case "--no-server":
+        useServer = false
+    case "--server-status":
+        printServerStatus = true
+    case "--stop-server":
+        stopServer = true
     case "--debug":
         break                      // 已在上面读过
     default:
@@ -115,6 +174,10 @@ while index < args.count {
     index += 1
 }
 
+// 这两个开关不需要 WAV / 模型：出问题时手边往往只有一条命令。
+if stopServer { stopResidentServer() }                 // 内部 exit
+if printServerStatus { reportServerStatus() }          // 内部 exit
+
 guard let inputPath = wavPath else { fail("缺 WAV 路径\n" + usage, exitUsage) }
 
 // MARK: - 前置检查（顺序由验收口径定：先模型 2，再 whisper-cli 3）
@@ -124,17 +187,21 @@ guard FileManager.default.fileExists(atPath: modelPath) else {
 }
 
 /// 只在 PATH 里找，不硬编码 Homebrew 路径：找不到就是 3，让调用方知道环境缺件。
-func findWhisperCLI() -> String? {
+func findExecutable(_ name: String) -> String? {
     let path = env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
     for dir in path.split(separator: ":") {
-        let candidate = String(dir) + "/whisper-cli"
+        let candidate = String(dir) + "/" + name
         if FileManager.default.isExecutableFile(atPath: candidate) { return candidate }
     }
     return nil
 }
 
-guard let whisperCLI = findWhisperCLI() else {
-    fail("找不到 whisper-cli（brew install whisper-cpp，且要在 PATH 里）", exitWhisper)
+/// server 模式只需要 whisper-server；只有回退到 CLI 时才需要 whisper-cli。
+/// 两条都缺才早退 3，避免「有 server 却因为没装 CLI 报错」和「没 server 还要等读完音频」。
+let whisperServerPath = useServer ? findExecutable("whisper-server") : nil
+let whisperCLIPath = findExecutable("whisper-cli")
+if whisperServerPath == nil && whisperCLIPath == nil {
+    fail("找不到 whisper-cli / whisper-server（brew install whisper-cpp，且要在 PATH 里）", exitWhisper)
 }
 
 guard FileManager.default.fileExists(atPath: inputPath) else {
@@ -346,14 +413,14 @@ func writeSegment(_ samples: [Float], _ segment: Segment, to url: URL) throws {
 
 // MARK: - whisper-cli 子进程
 
-func transcribeSegment(_ wav: URL, prompt: String?, outBase: URL) throws -> String {
+func transcribeSegment(_ wav: URL, prompt: String?, outBase: URL, cli: String) throws -> String {
     var arguments = ["-m", modelPath, "-l", "zh", "-f", wav.path,
                      "--no-timestamps", "-otxt", "-of", outBase.path, "-bs", "8"]
     if let prompt, !prompt.isEmpty {
         arguments += ["--prompt", prompt]
     }
     let process = Process()
-    process.executableURL = URL(fileURLWithPath: whisperCLI)
+    process.executableURL = URL(fileURLWithPath: cli)
     process.arguments = arguments
     let pipe = Pipe()
     process.standardOutput = pipe
@@ -388,6 +455,369 @@ func transcribeSegment(_ wav: URL, prompt: String?, outBase: URL) throws -> Stri
         .map { $0.trimmingCharacters(in: .whitespaces) }
         .filter { !$0.isEmpty }
         .joined()
+}
+
+// MARK: - 常驻 whisper-server
+
+/// 写进 `whisper-server.json` 的登记信息。模型路径也记下来：换了 --model 就不能复用旧 server。
+/// variant 记启动参数版本：以后改 server 的启动参数（beam、线程数…），老进程必须换掉，
+/// 否则新代码会连上一个参数不对的旧 server。
+struct ServerMeta: Codable {
+    let port: Int
+    let pid: Int32
+    let model: String
+    let variant: String?
+}
+
+enum ServerError: Error, CustomStringConvertible {
+    case http(String)
+    case badResponse(String)
+
+    var description: String {
+        switch self {
+        case .http(let m): return m
+        case .badResponse(let m): return m
+        }
+    }
+}
+
+/// 只在回退时打一行（不带 --debug 也打）：这是运行状态，不是调试日志。
+func fallbackToCLI(_ reason: String) {
+    FileHandle.standardError.write(
+        ("handy-transcribe: fallback=cli (" + reason + ")\n").data(using: .utf8)!)
+}
+
+func readMeta(at path: String) -> ServerMeta? {
+    guard let data = FileManager.default.contents(atPath: path) else { return nil }
+    return try? JSONDecoder().decode(ServerMeta.self, from: data)
+}
+
+func writeMeta(_ meta: ServerMeta) {
+    guard let data = try? JSONEncoder().encode(meta) else { return }
+    try? data.write(to: URL(fileURLWithPath: metaFile), options: .atomic)
+}
+
+func touchHeartbeat() {
+    // 看门狗看这个文件的 mtime 判空闲；写失败不影响转写，下一次还会再写。
+    try? String(Date().timeIntervalSince1970).write(toFile: heartbeatFile, atomically: true, encoding: .utf8)
+}
+
+func removeStateFiles() {
+    for path in [portFile, metaFile, heartbeatFile] {
+        try? FileManager.default.removeItem(atPath: path)
+    }
+}
+
+/// 只清掉属于 pid 的那份登记：看门狗醒来时可能已经有新 server 接手了。
+func removeStateFiles(in dir: String, ifPID pid: Int32) {
+    let metaPath = dir + "/whisper-server.json"
+    guard let meta = readMeta(at: metaPath), meta.pid == pid else { return }
+    for name in ["whisper-server.port", "whisper-server.json", "whisper-server.heartbeat"] {
+        try? FileManager.default.removeItem(atPath: dir + "/" + name)
+    }
+}
+
+func isAlive(_ pid: pid_t) -> Bool {
+    kill(pid, 0) == 0
+}
+
+func terminate(pid: pid_t, grace: Double = 3) {
+    guard pid > 0, isAlive(pid) else { return }
+    kill(pid, SIGTERM)
+    let deadline = Date().addingTimeInterval(grace)
+    while Date() < deadline {
+        if !isAlive(pid) { return }
+        usleep(100_000)
+    }
+    kill(pid, SIGKILL)
+    usleep(100_000)
+}
+
+// 探测用短超时，推理用长超时——同一个 session 会把 0.2s 的超时套到 12s 音频上。
+// 用 static 而不是顶层 let：`--server-status` 在顶层语句流里比这里先执行，
+// 顶层的 let 还没轮到初始化，取到的是空引用（第一次实现就卡死在这儿）。
+enum ServerHTTP {
+    static let probe: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 0.2
+        config.timeoutIntervalForResource = 0.2
+        config.waitsForConnectivity = false
+        return URLSession(configuration: config)
+    }()
+
+    static let inference: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 120
+        config.timeoutIntervalForResource = 300
+        config.waitsForConnectivity = false
+        return URLSession(configuration: config)
+    }()
+}
+
+/// 同步跑一个请求：顶层流程是线性的，用信号量把 async 收回来比回调套回调清楚。
+func synchronously(_ session: URLSession,
+                   _ request: URLRequest) -> Result<(Data, HTTPURLResponse), Error> {
+    var outcome: Result<(Data, HTTPURLResponse), Error> =
+        .failure(ServerError.badResponse("没有收到响应"))
+    let semaphore = DispatchSemaphore(value: 0)
+    session.dataTask(with: request) { data, response, error in
+        if let error {
+            outcome = .failure(error)
+        } else if let http = response as? HTTPURLResponse, let data {
+            outcome = .success((data, http))
+        }
+        semaphore.signal()
+    }.resume()
+    semaphore.wait()
+    return outcome
+}
+
+/// 光「端口在答」不够：G 用例里 8931 上可能蹲着 python -m http.server。
+/// whisper-server 的 `Server:` 头是 `whisper.cpp`，拿它认人。
+func serverAnswers(port: Int) -> Bool {
+    guard let url = URL(string: "http://127.0.0.1:\(port)/") else { return false }
+    var request = URLRequest(url: url)
+    request.httpMethod = "GET"
+    request.timeoutInterval = 0.2
+    switch synchronously(ServerHTTP.probe, request) {
+    case .failure:
+        return false
+    case .success(let (_, http)):
+        let server = http.value(forHTTPHeaderField: "Server")?.lowercased() ?? ""
+        return http.statusCode == 200 && server.contains("whisper.cpp")
+    }
+}
+
+func waitForServer(port: Int, pid: pid_t, timeout: Double) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while true {
+        if serverAnswers(port: port) { return true }
+        if pid > 0 && !isAlive(pid) { return false }   // 进程已经没了，别等满 5 秒
+        if Date() >= deadline { return false }
+        usleep(50_000)
+    }
+}
+
+func portIsFree(_ port: Int) -> Bool {
+    let fd = socket(AF_INET, SOCK_STREAM, 0)
+    guard fd >= 0 else { return false }
+    defer { close(fd) }
+    var address = sockaddr_in()
+    address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+    address.sin_family = sa_family_t(AF_INET)
+    address.sin_port = in_port_t(port).bigEndian
+    address.sin_addr.s_addr = inet_addr("127.0.0.1")
+    let bound = withUnsafePointer(to: &address) { pointer in
+        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+            bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+        }
+    }
+    return bound == 0
+}
+
+func pickFreePort() -> Int? {
+    for port in defaultServerPort..<(defaultServerPort + portScanCount) where portIsFree(port) {
+        return port
+    }
+    return nil
+}
+
+/// 用 argv[0] 把自己再拉起来（内部模式里再 setsid + exec）。
+let selfPath = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().path
+
+/// 父进程退出后它还得活着：Process 不会替父进程收尸子进程，内部模式里再 setsid
+/// 让它脱离当前会话/进程组，终端 Ctrl-C 打不到它。
+func spawnDetached(_ arguments: [String], log: String?) throws -> pid_t {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: selfPath)
+    process.arguments = arguments
+    process.standardInput = FileHandle(forReadingAtPath: "/dev/null")
+    if let log {
+        FileManager.default.createFile(atPath: log, contents: nil)
+        guard let handle = FileHandle(forWritingAtPath: log) else {
+            throw ServerError.badResponse("打不开日志 \(log)")
+        }
+        handle.seekToEndOfFile()
+        process.standardOutput = handle
+        process.standardError = handle
+    } else {
+        process.standardOutput = FileHandle(forWritingAtPath: "/dev/null")
+        process.standardError = FileHandle(forWritingAtPath: "/dev/null")
+    }
+    do {
+        try process.run()
+    } catch {
+        throw ServerError.badResponse("spawn 失败：\(error.localizedDescription)")
+    }
+    return process.processIdentifier
+}
+
+/// 有可用的登记就直接用；模型变了/进程死了就换；起不来返回 nil 让调用方回退 CLI。
+func prepareServer() -> Int? {
+    guard useServer else { return nil }
+    guard let serverBin = whisperServerPath else {
+        fallbackToCLI("PATH 里没有 whisper-server")
+        return nil
+    }
+    try? FileManager.default.createDirectory(atPath: cacheDir, withIntermediateDirectories: true)
+
+    if let meta = readMeta(at: metaFile) {
+        if meta.model == modelPath, meta.variant == serverVariant, meta.port > 0,
+           waitForServer(port: meta.port, pid: pid_t(meta.pid), timeout: 1.0) {
+            return meta.port
+        }
+        // 登记在，但模型不对或进程已死：是我们自己起的才收掉，不动别人的进程。
+        if isAlive(pid_t(meta.pid)) { terminate(pid: pid_t(meta.pid)) }
+        removeStateFiles()
+    } else {
+        // 只有旧版端口文件、没有 PID 登记：不知道是谁的，只清文件不杀进程。
+        removeStateFiles()
+    }
+
+    guard let port = pickFreePort() else {
+        fallbackToCLI("\(defaultServerPort)–\(defaultServerPort + portScanCount - 1) 没有空闲端口")
+        return nil
+    }
+    do {
+        let pid = try spawnDetached(["--internal-serve", String(port), modelPath, serverBin],
+                                    log: serverLogFile)
+        guard waitForServer(port: port, pid: pid, timeout: 5.0) else {
+            terminate(pid: pid)
+            fallbackToCLI("whisper-server 5 秒内没就绪")
+            return nil
+        }
+        writeMeta(ServerMeta(port: port, pid: Int32(pid), model: modelPath, variant: serverVariant))
+        try? String(port).write(toFile: portFile, atomically: true, encoding: .utf8)
+        touchHeartbeat()
+        // 看门狗自己也脱离父进程；它盯着心跳文件，空闲超时就 SIGTERM server 并清登记。
+        _ = try? spawnDetached(["--internal-watchdog", String(pid),
+                                String(serverIdleSeconds), cacheDir], log: nil)
+        return port
+    } catch {
+        fallbackToCLI("拉起 whisper-server 失败：\(error.localizedDescription)")
+        return nil
+    }
+}
+
+func transcribeViaServer(_ wav: URL, prompt: String?, port: Int) throws -> String {
+    let audio = try Data(contentsOf: wav)
+    let boundary = "handy-" + UUID().uuidString
+    var body = Data()
+    func add(_ text: String) { body.append(Data(text.utf8)) }
+    func field(_ name: String, _ value: String) {
+        add("--\(boundary)\r\n")
+        add("Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n")
+        add(value)
+        add("\r\n")
+    }
+
+    add("--\(boundary)\r\n")
+    add("Content-Disposition: form-data; name=\"file\"; filename=\"\(wav.lastPathComponent)\"\r\n")
+    add("Content-Type: audio/wav\r\n\r\n")
+    body.append(audio)
+    add("\r\n")
+    field("response_format", "json")
+    field("language", "zh")
+    if let prompt, !prompt.isEmpty { field("prompt", prompt) }
+    add("--\(boundary)--\r\n")
+
+    var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/inference")!)
+    request.httpMethod = "POST"
+    request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+    request.httpBody = body
+    request.timeoutInterval = 120
+
+    let (data, http) = try synchronously(ServerHTTP.inference, request).get()
+    guard http.statusCode == 200 else {
+        throw ServerError.http("HTTP \(http.statusCode)：\(String(data: data, encoding: .utf8)?.prefix(200) ?? "")")
+    }
+    let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    guard let object, let text = object["text"] as? String else {
+        throw ServerError.badResponse("响应里没有 text：\(String(data: data, encoding: .utf8)?.prefix(200) ?? "")")
+    }
+    touchHeartbeat()
+    // 与 CLI 的 .txt 同口径：段内多行拼成一句，段间不加换行。
+    return text.split(separator: "\n")
+        .map { $0.trimmingCharacters(in: .whitespaces) }
+        .filter { !$0.isEmpty }
+        .joined()
+}
+
+func reportServerStatus() -> Never {
+    guard let meta = readMeta(at: metaFile) else {
+        print("server=stopped")
+        exit(1)
+    }
+    if waitForServer(port: meta.port, pid: pid_t(meta.pid), timeout: 0.5) {
+        print("server=running port=\(meta.port) pid=\(meta.pid) model=\(meta.model)")
+        exit(0)
+    }
+    print("server=stopped port=\(meta.port) pid=\(meta.pid)")
+    exit(1)
+}
+
+func stopResidentServer() -> Never {
+    if let meta = readMeta(at: metaFile) {
+        terminate(pid: pid_t(meta.pid))
+        removeStateFiles(in: cacheDir, ifPID: meta.pid)
+        print("server=stopped port=\(meta.port) pid=\(meta.pid)")
+    } else {
+        removeStateFiles()
+        print("server=stopped")
+    }
+    exit(0)
+}
+
+/// spawn 出来的自己：setsid 后 exec whisper-server。exec 不换 PID，
+/// 所以父进程拿到的 processIdentifier 就是 server 的 PID。
+func runInternalServe(_ arguments: [String]) -> Never {
+    guard arguments.count == 3, let port = Int(arguments[0]) else { exit(exitUsage) }
+    let model = arguments[1]
+    let server = arguments[2]
+    _ = setsid()
+    // 别跟着 CLI 传 -bs 8：实测把解码拖慢一倍（0.09 → 0.19 s/秒音频），24s 三段要 4.6s，破 3.5s 线。
+    // 代价是解析略逊（chain.sh 整组 CER 1.96% vs CLI 1.79%，差在 s02 一个同音字），仍在 2.5% 线内。
+    let parts: [String] = [server, "-m", model, "-l", "zh",
+                           "--host", "127.0.0.1", "--port", String(port),
+                           "--no-timestamps"]
+    var command: [UnsafeMutablePointer<CChar>?] = []
+    for part in parts { command.append(strdup(part)) }
+    command.append(nil)
+    execv(server, &command)
+    fail("无法启动 whisper-server：\(server)", exitWhisper)
+}
+
+/// spawn 出来的自己：空闲超过 idle 就收掉 server。参数里刻意不出现 "whisper-server"
+/// 字样——验收用 `pgrep -fl whisper-server` 数进程，看门狗不能把自己算进去。
+func runInternalWatchdog(_ arguments: [String]) -> Never {
+    guard arguments.count == 3,
+          let rawPID = Int32(arguments[0]),
+          let idle = Double(arguments[1]) else { exit(exitUsage) }
+    let pid = pid_t(rawPID)
+    let dir = arguments[2]
+    let metaPath = dir + "/whisper-server.json"
+    let heartbeatPath = dir + "/whisper-server.heartbeat"
+    _ = setsid()
+    while true {
+        sleep(2)
+        guard let meta = readMeta(at: metaPath), meta.pid == rawPID else { exit(0) }
+        guard isAlive(pid) else {
+            removeStateFiles(in: dir, ifPID: rawPID)
+            exit(0)
+        }
+        let age: Double
+        if let attributes = try? FileManager.default.attributesOfItem(atPath: heartbeatPath),
+           let modified = attributes[.modificationDate] as? Date {
+            age = Date().timeIntervalSince(modified)
+        } else {
+            age = .infinity      // 心跳文件被人删了，按空闲处理
+        }
+        if age >= idle {
+            terminate(pid: pid)
+            removeStateFiles(in: dir, ifPID: rawPID)
+            exit(0)
+        }
+    }
 }
 
 // MARK: - 繁 → 简
@@ -576,31 +1006,63 @@ guard !segments.isEmpty else { fail("音频太短或读不出内容", exitUsage)
 note(String(format: "audio=%.2fs segments=%d silences=%d",
             duration, segments.count, silences.count))
 
-var pieces: [String] = []
-var previous = ""
+// 先把所有分段落盘：server 中途失败要整份回退 CLI 重跑，这些 wav 不该写两遍。
+var segmentURLs: [URL] = []
 for (i, segment) in segments.enumerated() {
     let segURL = workDir.appendingPathComponent(String(format: "seg%02d.wav", i))
-    let outBase = workDir.appendingPathComponent(String(format: "seg%02d", i))
     do {
         try writeSegment(samples, segment, to: segURL)
     } catch {
         fail("写分段失败：\(error)", exitUsage)
     }
-    // 首段只放热词；后续段再带上一段末尾 40 字，断句处的错少一半（POC 实测）。
-    var prompt = hotwords
-    if !previous.isEmpty {
-        prompt += (prompt.isEmpty ? "" : " ") + String(previous.suffix(carryCharacters))
+    segmentURLs.append(segURL)
+}
+
+/// 分段顺序 + 热词 + 接上文的策略只有这一份；换引擎（server / cli）不换策略。
+func transcribeAll(_ engine: (URL, String?, Int) throws -> String) throws -> [String] {
+    var pieces: [String] = []
+    var previous = ""
+    for (i, segURL) in segmentURLs.enumerated() {
+        // 首段只放热词；后续段再带上一段末尾 40 字，断句处的错少一半（POC 实测）。
+        var prompt = hotwords
+        if !previous.isEmpty {
+            prompt += (prompt.isEmpty ? "" : " ") + String(previous.suffix(carryCharacters))
+        }
+        let raw = try engine(segURL, prompt.isEmpty ? nil : prompt, i)
+        let simplified = toSimplified(raw)
+        note(String(format: "seg%d %.2f-%.2fs chars=%d",
+                    i, segments[i].start, segments[i].end, simplified.count))
+        pieces.append(simplified)
+        previous = simplified
     }
-    let raw: String
+    return pieces
+}
+
+var pieces: [String] = []
+var transcribed = false
+if let port = prepareServer() {
     do {
-        raw = try transcribeSegment(segURL, prompt: prompt.isEmpty ? nil : prompt, outBase: outBase)
+        pieces = try transcribeAll { wav, prompt, _ in
+            try transcribeViaServer(wav, prompt: prompt, port: port)
+        }
+        transcribed = true
+    } catch {
+        // 跑到一半 server 没了：整份结果丢掉重跑 CLI，别把两条路径的段拼在一起。
+        fallbackToCLI("server 请求失败：\(error)")
+    }
+}
+if !transcribed {
+    guard let cli = whisperCLIPath else {
+        fail("找不到 whisper-cli（brew install whisper-cpp，且要在 PATH 里）", exitWhisper)
+    }
+    do {
+        pieces = try transcribeAll { wav, prompt, i in
+            let outBase = workDir.appendingPathComponent(String(format: "seg%02d", i))
+            return try transcribeSegment(wav, prompt: prompt, outBase: outBase, cli: cli)
+        }
     } catch {
         fail("\(error)", exitUsage)
     }
-    let simplified = toSimplified(raw)
-    note(String(format: "seg%d %.2f-%.2fs chars=%d", i, segment.start, segment.end, simplified.count))
-    pieces.append(simplified)
-    previous = simplified
 }
 
 let (corrected, substitutions) = recoverTerms(Array(toSimplified(pieces.joined())), terms: terms)

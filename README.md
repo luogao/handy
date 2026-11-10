@@ -65,12 +65,29 @@
 ## 第 4 段：转写
 
 ```bash
-./handy/handy-transcribe 录音.wav                      # 文本打到 stdout
+./handy/handy-transcribe 录音.wav                      # 文本打到 stdout（默认优先常驻 server）
 ./handy/handy-transcribe 录音.wav --clip               # 再写剪贴板 + 弹提示
 ./handy/handy-transcribe 录音.wav --terms "Multica|Hermes agent"   # 临时热词表
 ./handy/handy-transcribe 录音.wav --model /path/ggml-medium-q5_0.bin
+./handy/handy-transcribe 录音.wav --no-server          # 强制旧 whisper-cli 路径（对照 / 兜底）
+./handy/handy-transcribe --server-status               # server 状态 / 端口 / PID（停止时 exit 1）
+./handy/handy-transcribe --stop-server                 # 停掉常驻 server + 看门狗
 ./handy/handy-mic --file 录音.wav                      # 走「录音结束」之后的同一条链，打印 elapsed_ms
 ```
+
+- **默认走常驻 server**：第一次调用拉起一个 `whisper-server`（514MB 模型只加载一次），
+  之后每段 `POST /inference`（multipart：`file`、`response_format=json`、`prompt`），
+  段间热词 + 接上文的 prompt 照搬旧路径。12–24 秒口述热态实测 1.7s / 2.8s。
+  为什么要有它：CLI 每段都带一次 ~0.75s 的模型加载，12.68s 切 2 段就是 3.16–3.59s，破 3.0s 线。
+- 拉起前先 `GET http://127.0.0.1:<port>/`（200ms 超时）探活；不活则从 8931 起找空闲端口，
+  起 server 后轮询就绪最多 5s。任何一步失败都打一行 `fallback=cli` 走旧路径，**功能与退出码语义不变**。
+- 生命周期：server 与看门狗都 `setsid` 脱离父进程，空闲 **10 分钟**自退（`HANDY_SERVER_IDLE_SECONDS`
+  可覆盖，最小 5s）；`--stop-server` 立即停。登记、日志在 `~/Library/Caches/handy/whisper-server.{json,port,log,heartbeat}`，
+  目录可用 `HANDY_LOG_DIR` 覆盖。server 崩了看门狗会清掉登记，下次调用重新拉起。
+- 解码参数：server 用 whisper.cpp 默认（贪心 + best-of 2），**不跟着 CLI 传 `-bs 8`**——
+  beam 8 把解码拖慢一倍，24s 三段要 4.6s，直接破 3.5s 线。代价是 s02 的一个同音字
+  （公位 / 工位），整组 CER 1.96% vs CLI 1.79%，两条都在 2.5% 线内；s03 两条都是 6.00%。
+- 不新增权限：server 只是本机 127.0.0.1 的进程，没有引入任何新的系统权限或输入监听 API。
 
 - 链路：`handy-mic --hotkey` 松手落盘 → `handy-transcribe --clip` → `handy-clip` 写剪贴板 → `handy-hint` 弹提示。
   热键模式和 `--file` 调的是同一个函数（`handy-mic.swift` 的 `finishRecording`），没有第二份实现。
@@ -85,5 +102,7 @@
 - 退出码：0 成功；1 用法 / 音频 / whisper 失败；2 模型不存在；3 找不到 `whisper-cli`。
   2 和 3 在读音频之前就判，缺件 20ms 内说清楚。
 - 不进网络、不加依赖：模型只按路径传，缺了就报错，**没有首次启动下载**。
-- 闸门：`bash apps/handy/tests/chain.sh`（合成音 10 句 + 长句 + 4 生造词，CER 用 `apps/handy/poc/cer.py` 的口径）。
+- 闸门：`bash apps/handy/tests/chain.sh`（合成音 10 句 + 长句 + 4 生造词 + 12s/24s 时延，
+  CER 用 `apps/handy/poc/cer.py` 的口径）。`CHAIN_NO_SERVER=1` 切回 CLI 路径对照 CER，
+  并把两条时延 case 标 skip（CLI 按设计就超线，不是回归项）。
 
