@@ -89,9 +89,11 @@
   `-bs 1` 走 cli.cpp 的 greedy 分支，`-bo 2` 对齐 server 的 best_of。不用 `-bs 8`：server 带
   beam 8 会把 24s 口述拖到 4.6s、破 3.5s 线，长驻进程第二个请求起还会翻回 greedy。整组 CER
   1.96%（线 2.5%），s03 两条路径都是 6.00%。
-- `-nf` 不要用：whisper.cpp 1.9.2 的 whisper-server 只解析 / 打印 `no_fallback`，从不写进
-  `wparams`（`temperature_inc` 恒 0.2），关不掉温度回退；回退用的 rng 在长驻进程里只 seed
-  一次且没有重置 API。跨请求的简繁漂移由 wrapper 的 `Hant-Hans` 归一到简体，不依赖 server 输出。
+- 关温度回退：server 的 `-nf` 在 whisper.cpp 1.9.2 是死参数（只解析 / 打印 `no_fallback`，
+  从不写进 `wparams`），所以请求里显式发 `temperature=0` + `temperature_inc=0`，CLI 侧对应
+  `-nf`。回退会用长驻进程里只 seed 一次的 rng 采样，同一段音频连发会偶尔漂（实测第 3 次尾部
+  错一字），两边都关掉后 24 次连跑逐字稳定。代价是难音频失去回退兜底，chain 的长句 / 多热词
+  用例仍绿。
 - 不新增权限：server 只是本机 127.0.0.1 的进程，没有引入任何新的系统权限或输入监听 API。
 
 - 链路：`handy-mic --hotkey` 松手落盘 → `handy-transcribe --clip` → `handy-clip` 写剪贴板 → `handy-hint` 弹提示。

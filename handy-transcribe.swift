@@ -422,10 +422,12 @@ func transcribeSegment(_ wav: URL, prompt: String?, outBase: URL, cli: String) t
     // cli.cpp 的默认是 -bs 5（beam search），而 server 是 beam_size=-1（真 greedy）+ best_of 2。
     // `-bs 1` 走 cli.cpp 的 greedy 分支（beam_size > 1 才算 beam），`-bo 2` 与 server 的
     // best_of 一致；少一个都会在长音频上分叉（24s：煮干 vs 主干）。
+    // `-nf` 和 server 请求里的 temperature_inc=0 配对：两边都关掉温度回退，否则回退会用
+    // server 进程里跨请求累积的 rng 采样，同一段音频连发会漂。
     // 不用 -bs 8：server 带 beam 8 时 24s 从 2.8s 涨到 4.6s、破 3.5s 线，长驻进程第二个请求
     // 起还会翻回 greedy；统一 greedy 后整组 CER 1.96% 仍在线内。
     var arguments = ["-m", modelPath, "-l", "zh", "-f", wav.path,
-                     "--no-timestamps", "-otxt", "-of", outBase.path, "-bs", "1", "-bo", "2"]
+                     "--no-timestamps", "-otxt", "-of", outBase.path, "-bs", "1", "-bo", "2", "-nf"]
     if let prompt, !prompt.isEmpty {
         arguments += ["--prompt", prompt]
     }
@@ -728,6 +730,11 @@ func transcribeViaServer(_ wav: URL, prompt: String?, port: Int) throws -> Strin
     add("\r\n")
     field("response_format", "json")
     field("language", "zh")
+    // 关温度回退：server 的 `-nf` 是死参数（只解析/打印，不写 wparams），请求里
+    // temperature_inc=0 才真正生效。回退采样用长驻进程里只 seed 一次的 rng，
+    // 是同一 server 连发时文本漂移的来源；CLI 侧对应 -nf，两条路径都走纯 argmax。
+    field("temperature", "0")
+    field("temperature_inc", "0")
     if let prompt, !prompt.isEmpty { field("prompt", prompt) }
     add("--\(boundary)--\r\n")
 
@@ -881,6 +888,8 @@ func runNormalizeSelfTest() -> Never {
         ("快递", "快递"),
         ("快递!!", "快递"),
         ("快遞，快遞", "快递快递"),
+        ("快遞，", "快递"),
+        ("  快递 ", "快递"),
         ("  快遞 \n 快递\t", "快递 快递"),
         ("：，。！？；、", ""),
         (":,.!?;", ""),
@@ -890,6 +899,10 @@ func runNormalizeSelfTest() -> Never {
         ("1,000 元和 3.5 元", "1,000 元和 3.5 元"),
         ("", ""),
     ]
+    // 归一只能压字形和标点，不许把字词差异也抹平（抹平就是掩盖问题）。
+    let mustDiffer: [(String, String)] = [
+        ("公位", "工位"),
+    ]
     var failed = 0
     for (input, expected) in cases {
         let got = normalizeText(input)
@@ -898,6 +911,14 @@ func runNormalizeSelfTest() -> Never {
         } else {
             failed += 1
             print("FAIL \(input.debugDescription) → \(got.debugDescription)，期望 \(expected.debugDescription)")
+        }
+    }
+    for (a, b) in mustDiffer {
+        if normalizeText(a) == normalizeText(b) {
+            failed += 1
+            print("FAIL \(a.debugDescription) 与 \(b.debugDescription) 归一后相同，字词差异被抹平")
+        } else {
+            print("PASS \(a.debugDescription) ≠ \(b.debugDescription)（归一不抹字词）")
         }
     }
     print(failed == 0 ? "normalize-selftest: PASS" : "normalize-selftest: FAIL")
