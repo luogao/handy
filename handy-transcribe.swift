@@ -414,8 +414,12 @@ func writeSegment(_ samples: [Float], _ segment: Segment, to url: URL) throws {
 // MARK: - whisper-cli 子进程
 
 func transcribeSegment(_ wav: URL, prompt: String?, outBase: URL, cli: String) throws -> String {
+    // 解码用 greedy，和 server 路径（whisper.cpp 默认 best_of 2）保持一致。
+    // 以前这里写死 -bs 8：同一段 wav 会多认对一个同音字（s02 工位 vs 公位，0.00% vs 2.00%），
+    // 但 server 带 beam 8 时 24s 口述从 2.8s 涨到 4.6s、破 3.5s 线，且长驻 server 从第二个
+    // 请求起会翻回 greedy 的结果——两条路径逐字一致只能统一 greedy，整组 CER 1.96% 仍在线内。
     var arguments = ["-m", modelPath, "-l", "zh", "-f", wav.path,
-                     "--no-timestamps", "-otxt", "-of", outBase.path, "-bs", "8"]
+                     "--no-timestamps", "-otxt", "-of", outBase.path]
     if let prompt, !prompt.isEmpty {
         arguments += ["--prompt", prompt]
     }
@@ -776,7 +780,10 @@ func runInternalServe(_ arguments: [String]) -> Never {
     let server = arguments[2]
     _ = setsid()
     // 别跟着 CLI 传 -bs 8：实测把解码拖慢一倍（0.09 → 0.19 s/秒音频），24s 三段要 4.6s，破 3.5s 线。
-    // 代价是解析略逊（chain.sh 整组 CER 1.96% vs CLI 1.79%，差在 s02 一个同音字），仍在 2.5% 线内。
+    // CLI 路径同样用 greedy（见 transcribeSegment），两条路径才能逐字一致。
+    // 也别指望 -nf：whisper.cpp 1.9.2 的 whisper-server 只解析/打印 no_fallback，
+    // 从不写进 wparams（server.cpp:949 无条件用 temperature_inc=0.2），关不掉温度回退；
+    // 回退用的 rng 在长驻进程里只 seed 一次，1.9.2 没有重置 API，只能靠 wrapper 归一兜住。
     let parts: [String] = [server, "-m", model, "-l", "zh",
                            "--host", "127.0.0.1", "--port", String(port),
                            "--no-timestamps"]

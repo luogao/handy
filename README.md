@@ -84,16 +84,20 @@
 - 生命周期：server 与看门狗都 `setsid` 脱离父进程，空闲 **10 分钟**自退（`HANDY_SERVER_IDLE_SECONDS`
   可覆盖，最小 5s）；`--stop-server` 立即停。登记、日志在 `~/Library/Caches/handy/whisper-server.{json,port,log,heartbeat}`，
   目录可用 `HANDY_LOG_DIR` 覆盖。server 崩了看门狗会清掉登记，下次调用重新拉起。
-- 解码参数：server 用 whisper.cpp 默认（贪心 + best-of 2），**不跟着 CLI 传 `-bs 8`**——
-  beam 8 把解码拖慢一倍，24s 三段要 4.6s，直接破 3.5s 线。代价是 s02 的一个同音字
-  （公位 / 工位），整组 CER 1.96% vs CLI 1.79%，两条都在 2.5% 线内；s03 两条都是 6.00%。
+- 解码参数：两条路径都用 whisper.cpp 默认的贪心解码；CLI 也不再传 `-bs 8`，同一段 wav
+  两条路径逐字一致。beam 8 曾在 s02 上多认对一个同音字（工位 / 公位），但 server 带 beam 8
+  会把 24s 口述拖到 4.6s、破 3.5s 线，长驻进程从第二个请求起还会翻回贪心的结果，只能统一贪心：
+  整组 CER 1.96%（线 2.5%），s03 两条路径都是 6.00%。
+- `-nf` 不要用：whisper.cpp 1.9.2 的 whisper-server 只解析 / 打印 `no_fallback`，从不写进
+  `wparams`（`temperature_inc` 恒 0.2），关不掉温度回退；回退用的 rng 在长驻进程里只 seed
+  一次且没有重置 API。跨请求的简繁漂移由 wrapper 的 `Hant-Hans` 归一到简体，不依赖 server 输出。
 - 不新增权限：server 只是本机 127.0.0.1 的进程，没有引入任何新的系统权限或输入监听 API。
 
 - 链路：`handy-mic --hotkey` 松手落盘 → `handy-transcribe --clip` → `handy-clip` 写剪贴板 → `handy-hint` 弹提示。
   热键模式和 `--file` 调的是同一个函数（`handy-mic.swift` 的 `finishRecording`），没有第二份实现。
 - 分段：8–12 秒一段，切点取静音中点（10ms 帧 RMS、-35dB、≥0.25s），窗口里没有静音就硬切在 ~11 秒。
   分段在进程内用 `AVAudioFile` 做，**不依赖 ffmpeg / ffprobe**（POC 的 `run.py` 用 ffmpeg 是度量台口径）。
-- 每段 `--prompt` = 热词表 + 上一段末尾 40 字（首段只放热词），`-l zh`，`-bs 8`。
+- 每段 `--prompt` = 热词表 + 上一段末尾 40 字（首段只放热词），`-l zh`。
   长音频单窗口加 prompt 会把整段写成 prompt 原文（POC.md 已复现），所以必须先分段。
 - 词典校正：两档匹配（先只校大小写，再音近形变 相似度 ≥0.60、首字母不同不套）。
   词表默认读 `~/Library/Application Support/Handy/terms.txt`（一行一个，`#` 开头是注释），`--terms "A|B|C"` 覆盖。
