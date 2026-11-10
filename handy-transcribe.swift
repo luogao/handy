@@ -129,6 +129,7 @@ var termsFile = defaultTermsFile
 var useServer = true
 var printServerStatus = false
 var stopServer = false
+var normalizeSelfTest = false
 
 var args = Array(CommandLine.arguments.dropFirst())
 var index = 0
@@ -164,6 +165,8 @@ while index < args.count {
         printServerStatus = true
     case "--stop-server":
         stopServer = true
+    case "--normalize-selftest":
+        normalizeSelfTest = true
     case "--debug":
         break                      // 已在上面读过
     default:
@@ -177,6 +180,7 @@ while index < args.count {
 // 这两个开关不需要 WAV / 模型：出问题时手边往往只有一条命令。
 if stopServer { stopResidentServer() }                 // 内部 exit
 if printServerStatus { reportServerStatus() }          // 内部 exit
+if normalizeSelfTest { runNormalizeSelfTest() }        // 内部 exit
 
 guard let inputPath = wavPath else { fail("缺 WAV 路径\n" + usage, exitUsage) }
 
@@ -414,12 +418,14 @@ func writeSegment(_ samples: [Float], _ segment: Segment, to url: URL) throws {
 // MARK: - whisper-cli 子进程
 
 func transcribeSegment(_ wav: URL, prompt: String?, outBase: URL, cli: String) throws -> String {
-    // 解码用 greedy，和 server 路径（whisper.cpp 默认 best_of 2）保持一致。
-    // 以前这里写死 -bs 8：同一段 wav 会多认对一个同音字（s02 工位 vs 公位，0.00% vs 2.00%），
-    // 但 server 带 beam 8 时 24s 口述从 2.8s 涨到 4.6s、破 3.5s 线，且长驻 server 从第二个
-    // 请求起会翻回 greedy 的结果——两条路径逐字一致只能统一 greedy，整组 CER 1.96% 仍在线内。
+    // 显式对齐 server 的解码参数，别依赖 CLI 默认值：
+    // cli.cpp 的默认是 -bs 5（beam search），而 server 是 beam_size=-1（真 greedy）+ best_of 2。
+    // `-bs 1` 走 cli.cpp 的 greedy 分支（beam_size > 1 才算 beam），`-bo 2` 与 server 的
+    // best_of 一致；少一个都会在长音频上分叉（24s：煮干 vs 主干）。
+    // 不用 -bs 8：server 带 beam 8 时 24s 从 2.8s 涨到 4.6s、破 3.5s 线，长驻进程第二个请求
+    // 起还会翻回 greedy；统一 greedy 后整组 CER 1.96% 仍在线内。
     var arguments = ["-m", modelPath, "-l", "zh", "-f", wav.path,
-                     "--no-timestamps", "-otxt", "-of", outBase.path]
+                     "--no-timestamps", "-otxt", "-of", outBase.path, "-bs", "1", "-bo", "2"]
     if let prompt, !prompt.isEmpty {
         arguments += ["--prompt", prompt]
     }
@@ -838,6 +844,66 @@ func toSimplified(_ text: String) -> String {
     return mutable as String
 }
 
+/// 夹在两个数字中间的标点有语义，归一不能删：「3.5」≠「35」、「8-12 秒」≠「812 秒」。
+func isDigitPunctuation(_ chars: [Character], _ i: Int) -> Bool {
+    guard i > 0, i + 1 < chars.count else { return false }
+    return chars[i - 1].isNumber && chars[i + 1].isNumber
+}
+
+/// 落盘前的确定性归一：繁 → 简（`--keep-hant` 时跳过）+ 去标点 + 空白收敛成单个空格。
+/// 为什么去标点：whisper 的「有没有句号 / 全角还是半角」会随解码状态漂（长驻 server 尤其明显，
+/// 见 server 的 rng 残留），而标点不承担转写语义（CER 口径本来就 drop_punct）。归一后同一段
+/// 音频的可见输出稳定：`快遞。` / `快递` / `快递!!` 都得到 `快递`。
+func normalizeText(_ text: String) -> String {
+    let chars = Array(toSimplified(text))
+    var out = ""
+    var pendingSpace = false
+    for (i, ch) in chars.enumerated() {
+        if ch.isWhitespace {
+            if !out.isEmpty { pendingSpace = true }
+            continue
+        }
+        if ch.isPunctuation, !isDigitPunctuation(chars, i) { continue }
+        if pendingSpace {
+            out.append(" ")
+            pendingSpace = false
+        }
+        out.append(ch)
+    }
+    return out
+}
+
+/// 归一函数的最小单测入口：`handy-transcribe --normalize-selftest`。
+/// 纯函数，不碰模型 / 音频 / 网络；apps/handy/tests/normalize_test.sh 调它。
+func runNormalizeSelfTest() -> Never {
+    let cases: [(String, String)] = [
+        ("快遞。", "快递"),
+        ("快递", "快递"),
+        ("快递!!", "快递"),
+        ("快遞，快遞", "快递快递"),
+        ("  快遞 \n 快递\t", "快递 快递"),
+        ("：，。！？；、", ""),
+        (":,.!?;", ""),
+        ("MacBook Pro", "MacBook Pro"),
+        ("温度 3.5s，涨到 4.6s", "温度 3.5s涨到 4.6s"),
+        ("改成 8-12 秒一段", "改成 8-12 秒一段"),
+        ("1,000 元和 3.5 元", "1,000 元和 3.5 元"),
+        ("", ""),
+    ]
+    var failed = 0
+    for (input, expected) in cases {
+        let got = normalizeText(input)
+        if got == expected {
+            print("PASS \(input.debugDescription) → \(got.debugDescription)")
+        } else {
+            failed += 1
+            print("FAIL \(input.debugDescription) → \(got.debugDescription)，期望 \(expected.debugDescription)")
+        }
+    }
+    print(failed == 0 ? "normalize-selftest: PASS" : "normalize-selftest: FAIL")
+    exit(failed == 0 ? 0 : 1)
+}
+
 // MARK: - 词典校正（recover_terms 的 Swift 版）
 
 func isLatinLetter(_ c: Character) -> Bool {
@@ -1036,7 +1102,7 @@ func transcribeAll(_ engine: (URL, String?, Int) throws -> String) throws -> [St
             prompt += (prompt.isEmpty ? "" : " ") + String(previous.suffix(carryCharacters))
         }
         let raw = try engine(segURL, prompt.isEmpty ? nil : prompt, i)
-        let simplified = toSimplified(raw)
+        let simplified = normalizeText(raw)
         note(String(format: "seg%d %.2f-%.2fs chars=%d",
                     i, segments[i].start, segments[i].end, simplified.count))
         pieces.append(simplified)
@@ -1072,7 +1138,7 @@ if !transcribed {
     }
 }
 
-let (corrected, substitutions) = recoverTerms(Array(toSimplified(pieces.joined())), terms: terms)
+let (corrected, substitutions) = recoverTerms(Array(normalizeText(pieces.joined())), terms: terms)
 if debug, !substitutions.isEmpty {
     note("dict " + substitutions.map { "\($0.0)→\($0.1)(\($0.2))" }.joined(separator: " "))
 }

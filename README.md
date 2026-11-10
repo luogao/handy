@@ -84,10 +84,11 @@
 - 生命周期：server 与看门狗都 `setsid` 脱离父进程，空闲 **10 分钟**自退（`HANDY_SERVER_IDLE_SECONDS`
   可覆盖，最小 5s）；`--stop-server` 立即停。登记、日志在 `~/Library/Caches/handy/whisper-server.{json,port,log,heartbeat}`，
   目录可用 `HANDY_LOG_DIR` 覆盖。server 崩了看门狗会清掉登记，下次调用重新拉起。
-- 解码参数：两条路径都用 whisper.cpp 默认的贪心解码；CLI 也不再传 `-bs 8`，同一段 wav
-  两条路径逐字一致。beam 8 曾在 s02 上多认对一个同音字（工位 / 公位），但 server 带 beam 8
-  会把 24s 口述拖到 4.6s、破 3.5s 线，长驻进程从第二个请求起还会翻回贪心的结果，只能统一贪心：
-  整组 CER 1.96%（线 2.5%），s03 两条路径都是 6.00%。
+- 解码参数：两条路径统一 greedy，同一段 wav 逐字一致。CLI **显式**传 `-bs 1 -bo 2`——
+  `whisper-cli` 的默认是 `-bs 5`（beam search），不写就还是 beam，长音频会和 server 分叉；
+  `-bs 1` 走 cli.cpp 的 greedy 分支，`-bo 2` 对齐 server 的 best_of。不用 `-bs 8`：server 带
+  beam 8 会把 24s 口述拖到 4.6s、破 3.5s 线，长驻进程第二个请求起还会翻回 greedy。整组 CER
+  1.96%（线 2.5%），s03 两条路径都是 6.00%。
 - `-nf` 不要用：whisper.cpp 1.9.2 的 whisper-server 只解析 / 打印 `no_fallback`，从不写进
   `wparams`（`temperature_inc` 恒 0.2），关不掉温度回退；回退用的 rng 在长驻进程里只 seed
   一次且没有重置 API。跨请求的简繁漂移由 wrapper 的 `Hant-Hans` 归一到简体，不依赖 server 输出。
@@ -101,12 +102,15 @@
   长音频单窗口加 prompt 会把整段写成 prompt 原文（POC.md 已复现），所以必须先分段。
 - 词典校正：两档匹配（先只校大小写，再音近形变 相似度 ≥0.60、首字母不同不套）。
   词表默认读 `~/Library/Application Support/Handy/terms.txt`（一行一个，`#` 开头是注释），`--terms "A|B|C"` 覆盖。
-- 简繁：whisper 的中文输出默认常是繁体，落盘前用系统 ICU（`Hant-Hans`）转简体；`--keep-hant` 关掉。
-  POC 量 CER 时本来就用 zhconv 归一，产品输出也得归，否则用户粘出去的是繁体。
+- 归一：落盘前统一走 `normalizeText`——系统 ICU 的 `Hant-Hans` 转简体（`--keep-hant` 关掉）、
+  去标点（数字之间的 `-` / `.` / `,` 保留）、连续空白收敛成一个空格。`快遞。` / `快递` / `快递!!`
+  都归一成 `快递`；POC 量 CER 时本来就用 zhconv + drop_punct 归一，产品输出也得归。
+  单测：`bash apps/handy/tests/normalize_test.sh`（走产物的 `--normalize-selftest`，不复制第二份实现）。
 - 退出码：0 成功；1 用法 / 音频 / whisper 失败；2 模型不存在；3 找不到 `whisper-cli`。
   2 和 3 在读音频之前就判，缺件 20ms 内说清楚。
 - 不进网络、不加依赖：模型只按路径传，缺了就报错，**没有首次启动下载**。
 - 闸门：`bash apps/handy/tests/chain.sh`（合成音 10 句 + 长句 + 4 生造词 + 12s/24s 时延，
   CER 用 `apps/handy/poc/cer.py` 的口径）。`CHAIN_NO_SERVER=1` 切回 CLI 路径对照 CER，
   并把两条时延 case 标 skip（CLI 按设计就超线，不是回归项）。
+  `bash apps/handy/tests/normalize_test.sh` 单独验归一函数（简繁 + 标点收敛）。
 
