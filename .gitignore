@@ -1,0 +1,15 @@
+# SPM
+.build/
+.swiftpm/
+Package.resolved
+
+# 打包产物
+build/
+*.app
+
+# macOS
+.DS_Store
+
+# 本地日志 / 录音 / 状态
+*.log
+recordings/

@@ -1,128 +1,155 @@
-# Handy · 四段（写入剪贴板 + 可见提示 + 麦克风录音 + 转写）
+<p align="center">
+  <img src="docs/assets/readme-hero.png" alt="Handy — 按住说话，松手出字" width="100%">
+</p>
 
-前三段里只有第 3 段申请麦克风一项，其余零 TCC；全程不碰 Accessibility / 输入监控 / CGEvent。
-第 4 段接在第 3 段后面：松手 → 分段转写 → 词典校正 → 剪贴板 → 提示，一条链跑完。
+<h1 align="center">Handy</h1>
 
-## 第 1 段：写入剪贴板
+<p align="center">
+按住 <kbd>⌃</kbd><kbd>⌥</kbd><kbd>H</kbd> 说话，松手，文字进剪贴板。<br>
+音频不出本机，不申请辅助功能权限，不监听键盘。
+</p>
 
-`./handy-clip "文本"` 写入 `NSPasteboardTypeString`；首次写入前备份原剪贴板全部类型，`./handy-clip --restore` 还回去。
+<p align="center">
+  <img alt="platform" src="https://img.shields.io/badge/macOS-13%2B-black">
+  <img alt="swift" src="https://img.shields.io/badge/Swift-5.9-orange">
+  <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
+  <img alt="tests" src="https://img.shields.io/badge/tests-56%20passing-brightgreen">
+</p>
 
-```bash
-./handy/handy-clip "测试 中文，换行
-第二行 🎤" && pbpaste
-./handy/handy-clip --restore     # 回到写入前的内容
-./handy/handy-clip --status      # 备份状态
-```
+---
 
-- 备份位置：`~/Library/Caches/handy/clipboard-backup.plist`（0600），可用 `HANDY_CLIP_STATE_DIR` 覆盖。
-- 退出码：成功 0；无参数 / 无备份 / 写入失败 1。无参数时 stderr 打 usage。
-- 非选项参数按一个空格拼接；要保留换行就把整段文本作为一个参数传进来。
+## 为什么做这个
 
-## 第 2 段：可见提示
+中文输入法打长句慢，云端语音输入要把录音传出去，输入法级方案要装输入法、还要全盘键盘权限。
 
-先起常驻的菜单栏进程（出现 `mic.fill` 图标，关掉进程提示就没了）：
+Handy 只保留一个动作：**按住说话**。没有悬浮球、没有常驻窗口、不监听键盘事件、不模拟按键。
 
-```bash
-./handy/handy-menubar &
-```
+- 说 10 秒的话，比打 40 个字快
+- 音频不出本机——会议内容、客户名字、代码片段都不上传
+- 只申请麦克风一项权限
 
-之后每次写入剪贴板，屏幕右上角出现 2 秒浮层：
+## 装
 
-```bash
-./handy/handy-clip "测试 中文"     # 写剪贴板 + 弹提示
-./handy/handy-hint --trigger       # 只弹提示，不碰剪贴板（测面板用）
-./handy/handy-hint --sound off     # 关提示音（落盘，重启仍生效）
-./handy/handy-hint --sound on
-./handy/handy-hint --status        # 看当前设置
-```
-
-- 浮层是不抢焦点、不拦点击的非激活 `NSPanel`；连按只复用同一个面板并重置 2 秒计时，不会堆叠。
-- 触发通道是 `DistributedNotificationCenter`；菜单栏进程没在跑时，`handy-clip` 的写入照常成功。
-- 日志：`~/Library/Caches/handy/hint.log`（毫秒时间戳，含 `since_write_ms`），可用 `HANDY_LOG_DIR` / `HANDY_SETTINGS_DIR` / `HANDY_CLIP_STATE_DIR` 覆盖目录。
-- 提示音开关：`~/Library/Application Support/Handy/settings.plist`（0600）。
-- 选型：没用 `UNUserNotificationCenter` —— CLI 进程没有 app bundle / bundle id，注册通知中心要打包签名；改用 NSStatusItem + NSPanel，零权限、时长可控。
-- 验收数据与截图见 [HINT.md](HINT.md)。
-
-> 两个入口都是 `#!/usr/bin/env swift` 脚本，每次调用要现编译（约 0.6s）。演示/验收时如果要真正「连按」，可以 `swiftc -O` 预编译一份再调，行为一致。
-
-## 第 3 段：麦克风录音
+需要 macOS 13+、Xcode 命令行工具（`xcode-select --install`）。
 
 ```bash
-./handy/handy-mic --list            # devices(N)；无设备时 devices(0)，exit 0
-./handy/handy-mic --record 3        # 录 3 秒到 ~/Library/Caches/handy/recordings/*.wav
-./handy/handy-mic --hotkey          # 常驻：按住 ⌃⌥H 录，松开转写并写剪贴板
-./handy/handy-mic --check           # 只注册热键、报告状态后退出（无设备也能验）
-./handy/handy-mic --file 录音.wav   # 跳过录音，直接跑后面的链路（见第 4 段）
+brew install whisper-cpp                 # 提供 whisper-server / whisper-cli
+
+git clone https://github.com/luogao/handy.git
+cd handy
+
+./scripts/fetch-model.sh                 # 下载 ggml-medium-q5_0（约 514MB）
+./scripts/bundle.sh                      # 产出 build/Handy.app
+
+cp -R build/Handy.app /Applications/ && open /Applications/Handy.app
 ```
 
-- 入口是 shell 包装：首次调用用 `swiftc` 把 `handy-mic.swift` 编译到 `handy/.build/`（约 2s），之后直接跑二进制。
-- 先数设备再要权限：无设备时 `--record` / `--hotkey` 立刻 `exit 3` + `no audio input device`，不调用 `requestAccess`，不会卡 20 秒。
-- 热键用 Carbon `RegisterEventHotKey`（⌃⌥H），不装 CGEventTap、不申请辅助功能 / 输入监控。
-- 录音格式 16kHz / 单声道 / 16-bit PCM WAV；热键模式松手 <200ms 丢弃并提示，>60s 自动停。
-- 退出码：0 成功；1 用法 / IO；3 无输入设备；4 麦克风权限被拒；5 热键注册失败。
-- 本机没有麦克风，**录音本身没验过**，验收边界见 [SEG3.md](../../apps/handy/SEG3.md)。
+第一次按 <kbd>⌃</kbd><kbd>⌥</kbd><kbd>H</kbd> 会弹麦克风授权，点允许即可。
 
-## 第 4 段：转写
+> 想换模型（`large-v3-turbo` 等）：转成 ggml 放进 `~/.cache/whisper.cpp/`，
+> 在「设置 › 模型」里选它。模型缺失和文件损坏会分别报不同的错，不会只丢一句「转写失败」。
+
+## 用
+
+| 动作 | 结果 |
+|---|---|
+| 按住 <kbd>⌃</kbd><kbd>⌥</kbd><kbd>H</kbd> 说话，松开 | 转写完成 → 写入剪贴板 + 右上角气泡 |
+| 按得太短（< 0.2 秒） | 丢弃，不转写 |
+| 说太久（> 60 秒） | 到点自动停，照常转写 |
+| 点菜单栏图标 | 重试上次录音 / 设置 / 退出 |
+
+「设置」里能改三样：热键、模型路径、日志开关。
+
+**为什么只写剪贴板、不自动粘贴？** 自动粘贴要发合成按键事件，那就得申请辅助功能权限。
+为了省一次 <kbd>⌘</kbd><kbd>V</kbd> 换一个全盘键盘权限，不划算。
+
+## 它明确不做的事
+
+| 不做 | 原因 |
+|---|---|
+| 上传音频 | 没有网络请求，转写全在本地 `whisper-server` |
+| 监听键盘 / 模拟按键 | 不申请辅助功能、输入监控、Accessibility |
+| 常驻 Dock / 悬浮窗 | 只有菜单栏图标 |
+| 自动更新 | 现在升级就是重新 `bundle.sh` 覆盖 |
+
+热键走 Carbon 的 `RegisterEventHotKey`——这是目前唯一能做到「全局热键 + 零 TCC」的路径。
+
+## 性能（M 系列，medium-q5，本机实测）
+
+| 音频长度 | 热态总耗时 |
+|---|---|
+| 3.2 秒 | 0.82 秒 |
+| 21.9 秒 | 1.53 秒（3 次中位） |
+
+热态 = `whisper-server` 已在跑、模型常驻内存。冷态首句会多一次模型加载（约 0.75 秒）。
+`./handy-transcribe --log-stats` 能看到每次 spawn / ready / request 的明细。
+
+设计上 **≤ 28 秒整段一次请求**：whisper 的硬窗口是 30 秒，31 秒单请求会丢后半段；
+切段每多一次请求就多付一次编码开销，所以能不切就不切。
+
+## 架构
+
+```mermaid
+flowchart LR
+    HK["⌃⌥H 按下<br/>Carbon 热键"] --> REC["MicrophoneRecorder<br/>16kHz 单声道 WAV"]
+    REC -->|松开| TR["Transcriber<br/>模型预检"]
+    TR -->|"--model"| CLI["handy-transcribe"]
+    CLI --> SRV["whisper-server<br/>常驻，模型只加载一次"]
+    SRV --> TXT["文本"]
+    TXT --> CLIP["剪贴板"]
+    TXT --> HUD["右上角气泡"]
+```
+
+- **`Handy.app`**：菜单栏 app，管热键、录音、气泡、设置
+- **`handy-transcribe`**：转写引擎，默认复用常驻 server；`--no-server` 走一次性 `whisper-cli`
+- **模型预检**：起进程之前先查文件，缺失与损坏分别有独立文案和日志码
+  （`model_missing` / `model_unreadable`），4KB 垃圾文件不会被送进 whisper
+
+更多调参细节（分段策略、热词 prompt、greedy 对齐、CER 口径）见
+[docs/ENGINEERING.md](docs/ENGINEERING.md)。
+
+## 附带的小工具
+
+这些是 app 的基础件，也能单独用：
 
 ```bash
-./handy/handy-transcribe 录音.wav                      # 文本打到 stdout（默认优先常驻 server）
-./handy/handy-transcribe 录音.wav --clip               # 再写剪贴板 + 弹提示
-./handy/handy-transcribe 录音.wav --terms "Multica|Hermes agent"   # 临时热词表
-./handy/handy-transcribe 录音.wav --model /path/ggml-medium-q5_0.bin
-./handy/handy-transcribe 录音.wav --no-server          # 强制旧 whisper-cli 路径（对照 / 兜底）
-./handy/handy-transcribe --server-status               # server 状态 / 端口 / PID（停止时 exit 1）
-./handy/handy-transcribe --stop-server                 # 停掉常驻 server + 看门狗
-./handy/handy-transcribe --log-stats                   # 近 7 天的 spawn / 就绪 / 冷启动统计
-./handy/handy-transcribe --log-stats --since 24h       # 也认 30m / 2026-11-03 / ISO8601
-./handy/handy-mic --file 录音.wav                      # 走「录音结束」之后的同一条链，打印 elapsed_ms
+./handy-transcribe 录音.wav                      # 转写，打印到 stdout
+./handy-transcribe 录音.wav --clip               # 再写剪贴板 + 弹气泡
+./handy-transcribe --server-status               # server 是否在跑
+./handy-transcribe --log-stats --since 24h       # 冷启动 / 就绪统计
+./handy-mic --record 3                           # 录 3 秒到 WAV
+./handy-clip "文本"                              # 写剪贴板（先备份原内容）
+./handy-clip --restore                           # 还原剪贴板
+./handy-hint --trigger                           # 只弹气泡，不碰剪贴板
 ```
 
-- **默认走常驻 server**：第一次调用拉起一个 `whisper-server`（514MB 模型只加载一次），
-  之后每段 `POST /inference`（multipart：`file`、`response_format=json`、`prompt`），
-  段间热词 + 接上文的 prompt 照搬旧路径。12–24 秒口述热态实测 1.7s / 2.8s。
-  为什么要有它：CLI 每段都带一次 ~0.75s 的模型加载，12.68s 切 2 段就是 3.16–3.59s，破 3.0s 线。
-- 拉起前先 `GET http://127.0.0.1:<port>/`（200ms 超时）探活；不活则从 8931 起找空闲端口，
-  起 server 后轮询就绪最多 5s。任何一步失败都打一行 `fallback=cli` 走旧路径，**功能与退出码语义不变**。
-- 生命周期：server 与看门狗都 `setsid` 脱离父进程，空闲 **10 分钟**自退（`HANDY_SERVER_IDLE_SECONDS`
-  可覆盖，最小 5s）；`--stop-server` 立即停。登记、日志在 `~/Library/Caches/handy/whisper-server.{json,port,log,heartbeat}`，
-  目录可用 `HANDY_LOG_DIR` 覆盖。server 崩了看门狗会清掉登记，下次调用重新拉起。
-- **日志是可统计的事件流**（不是一次性调试输出）：每行前缀 `2026-11-10T14:20:31.482Z`，
-  追加写、不截断，单文件超 5MB 轮转成 `.1`（当前 + `.1` 两份封顶）。事件行以 `handy event=` 标记，
-  `spawn` / `ready` / `request` / `idle_exit` / `stop` 各带元数据；server 自己的 stdout/stderr
-  由中继进程逐行加 `server` 前缀转发（非 tty 的 stderr 被 libc 整块缓冲，所以转发行是成批到达的）。
-  只记元数据，**不记识别文本、音频内容和 wav 路径**。统计口径：`--log-stats`。
-- 解码参数：两条路径统一 greedy，同一段 wav 逐字一致。CLI **显式**传 `-bs 1 -bo 2`——
-  `whisper-cli` 的默认是 `-bs 5`（beam search），不写就还是 beam，长音频会和 server 分叉；
-  `-bs 1` 走 cli.cpp 的 greedy 分支，`-bo 2` 对齐 server 的 best_of。不用 `-bs 8`：server 带
-  beam 8 会把 24s 口述拖到 4.6s、破 3.5s 线，长驻进程第二个请求起还会翻回 greedy。整组 CER
-  1.96%（线 2.5%），s03 两条路径都是 6.00%。
-- 关温度回退：server 的 `-nf` 在 whisper.cpp 1.9.2 是死参数（只解析 / 打印 `no_fallback`，
-  从不写进 `wparams`），所以请求里显式发 `temperature=0` + `temperature_inc=0`，CLI 侧对应
-  `-nf`。回退会用长驻进程里只 seed 一次的 rng 采样，同一段音频连发会偶尔漂（实测第 3 次尾部
-  错一字），两边都关掉后 24 次连跑逐字稳定。代价是难音频失去回退兜底，chain 的长句 / 多热词
-  用例仍绿。
-- 不新增权限：server 只是本机 127.0.0.1 的进程，没有引入任何新的系统权限或输入监听 API。
+## 开发
 
-- 链路：`handy-mic --hotkey` 松手落盘 → `handy-transcribe --clip` → `handy-clip` 写剪贴板 → `handy-hint` 弹提示。
-  热键模式和 `--file` 调的是同一个函数（`handy-mic.swift` 的 `finishRecording`），没有第二份实现。
-- 分段：**≤28 秒整段一次请求**；超过才切，切点取静音中点（10ms 帧 RMS、-35dB、≥0.25s），
-  窗口里没有静音就硬切在 ~25 秒。30 秒是 whisper 的硬窗口，31 秒单请求会丢后半段（DYVI-114 实测）。
-  每多一次请求就多付一次 30 秒窗口的编码（本机 ~0.55s），所以能不切就不切。
-  分段在进程内用 `AVAudioFile` 做，**不依赖 ffmpeg / ffprobe**（POC 的 `run.py` 用 ffmpeg 是度量台口径）。
-- 每段 `--prompt` = 热词表 + 上一段末尾 40 字（首段只放热词），整条 prompt 以「。」收尾，`-l zh`。
-  不封口时模型会把热词 prompt 当待续写内容原样复读（DYVI-114 实测：12/16 秒音频 + 5 个热词，
-  整段输出就是热词表本身）；句号封口后复读消失，长句热词命中不变。
-- 词典校正：两档匹配（先只校大小写，再音近形变 相似度 ≥0.60、首字母不同不套）。
-  词表默认读 `~/Library/Application Support/Handy/terms.txt`（一行一个，`#` 开头是注释），`--terms "A|B|C"` 覆盖。
-- 归一：落盘前统一走 `normalizeText`——系统 ICU 的 `Hant-Hans` 转简体（`--keep-hant` 关掉）、
-  去标点（数字之间的 `-` / `.` / `,` 保留）、连续空白收敛成一个空格。`快遞。` / `快递` / `快递!!`
-  都归一成 `快递`；POC 量 CER 时本来就用 zhconv + drop_punct 归一，产品输出也得归。
-  单测：`bash apps/handy/tests/normalize_test.sh`（走产物的 `--normalize-selftest`，不复制第二份实现）。
-- 退出码：0 成功；1 用法 / 音频 / whisper 失败；2 模型不存在；3 找不到 `whisper-cli`。
-  2 和 3 在读音频之前就判，缺件 20ms 内说清楚。
-- 不进网络、不加依赖：模型只按路径传，缺了就报错，**没有首次启动下载**。
-- 闸门：`bash apps/handy/tests/chain.sh`（合成音 10 句 + 长句 + 4 生造词 + 12s/24s 时延，
-  CER 用 `apps/handy/poc/cer.py` 的口径）。`CHAIN_NO_SERVER=1` 切回 CLI 路径对照 CER，
-  并把两条时延 case 标 skip（CLI 按设计就超线，不是回归项）。
-  `bash apps/handy/tests/normalize_test.sh` 单独验归一函数（简繁 + 标点收敛）。
+```bash
+swift build
+swift test           # 56 条：模型预检、失败文案、热键组合、日志解析等纯逻辑
+./scripts/bundle.sh  # 打包，会把 handy-transcribe 一起编译进 Resources/bin
+```
 
+改失败路径或验收文案时用这两个脚本：
+
+```bash
+./scripts/failrepro.sh status          # 看当前状态
+./scripts/failrepro.sh model-missing   # 造模型缺失（写 defaults，不动机器上的真模型）
+./scripts/failrepro.sh model-corrupt   # 造模型损坏
+./scripts/failrepro.sh restore         # 还原（按快照写回你原来的配置）
+```
+
+> `failrepro.sh` 改任何配置前都先快照原值，`restore` 按快照还原；
+> 如果你自己手动改过，它会拒绝覆盖并打印三方对比。
+
+## 已知限制
+
+- 只在 macOS 13+ 验证；没做签名和公证，本地构建的 ad-hoc 签名可以直接开
+- 中文识别最准（默认模型对中文优化过），英文 / 日文能用但没专项调
+- 长音频（> 60 秒）会被截断——这是产品约束不是 bug
+- 没有 Homebrew Cask、没有自动更新，升级靠重新构建
+
+## License
+
+[MIT](LICENSE)

@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-test:
+    name: build & test (macOS)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Swift 版本
+        run: swift --version
+
+      - name: 构建
+        run: swift build -v
+
+      - name: 单元测试
+        run: swift test
+
+      - name: 打包 .app 冒烟
+        run: |
+          ./scripts/bundle.sh
+          test -x build/Handy.app/Contents/MacOS/Handy
+          test -x build/Handy.app/Contents/Resources/bin/handy-transcribe
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" build/Handy.app/Contents/Info.plist
+
+      - name: CLI 冒烟（--help 不崩）
+        run: ./handy-transcribe --help | head -3
