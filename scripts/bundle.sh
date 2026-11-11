@@ -26,6 +26,24 @@ if [ -f Resources/AppIcon.icns ]; then
   cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 fi
 
+# 把 handy-transcribe 编译好塞进 Resources/bin：装到 /Applications 之后没有开发树，
+# 只靠「从可执行文件向上找」会落到 missing，每次录音都报「找不到 handy-transcribe」。
+# 仓库里的 handy-transcribe 是 shell shim（首次调用才 swiftc），用户机器上没有 swiftc，
+# 所以必须在打包机上先编译成独立的可执行文件。
+TRANSCRIBE_SRC="handy-transcribe.swift"
+TRANSCRIBE_BIN=".build/$CONFIG/handy-transcribe"
+if [ -f "$TRANSCRIBE_SRC" ]; then
+  if [ ! -x "$TRANSCRIBE_BIN" ] || [ "$TRANSCRIBE_SRC" -nt "$TRANSCRIBE_BIN" ]; then
+    echo "编译 handy-transcribe…"
+    swiftc -O "$TRANSCRIBE_SRC" -o "$TRANSCRIBE_BIN"
+  fi
+  mkdir -p "$APP/Contents/Resources/bin"
+  cp "$TRANSCRIBE_BIN" "$APP/Contents/Resources/bin/handy-transcribe"
+  chmod +x "$APP/Contents/Resources/bin/handy-transcribe"
+else
+  echo "警告：找不到 $TRANSCRIBE_SRC，打包后的 app 将无法转写" >&2
+fi
+
 # ad-hoc 签名：没有 Developer ID 也能本机双击。--force 覆盖 cp 之后失效的签名。
 codesign --force --sign - --timestamp=none "$APP" >/dev/null
 
