@@ -10,6 +10,7 @@ struct AppSettings {
         static let hotKeyShift = "hotkey.shift"
         static let hotKeyCommand = "hotkey.command"
         static let loggingEnabled = "log.enabled"
+        static let modelPath = "modelPath"
     }
 
     private let defaults: UserDefaults
@@ -48,5 +49,24 @@ struct AppSettings {
 
     func setLoggingEnabled(_ enabled: Bool) {
         defaults.set(enabled, forKey: Key.loggingEnabled)
+    }
+
+    /// 自定义模型路径；未设置返回 nil。
+    ///
+    /// **绝不在这里补默认路径**：补了之后调用方永远会传 `--model`，CLI 自己的
+    /// 默认值就成了摆设，两边各有一份「默认模型」也就再也对不上。未设置就是
+    /// 未设置，传不传 `--model` 由调用方按 nil 判断。
+    var modelPath: String? {
+        HandyPaths.normalizeModelPath(defaults.string(forKey: Key.modelPath))
+    }
+
+    /// 传 nil / 空串 / 全空白都表示「恢复默认」：直接删键，不留一个空字符串，
+    /// 这样 `defaults read` 看到的就是真正的未设置状态。
+    func setModelPath(_ path: String?) {
+        guard let normalized = HandyPaths.normalizeModelPath(path) else {
+            defaults.removeObject(forKey: Key.modelPath)
+            return
+        }
+        defaults.set(normalized, forKey: Key.modelPath)
     }
 }

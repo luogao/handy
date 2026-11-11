@@ -48,20 +48,92 @@ enum TranscriberResolver {
     }
 }
 
+/// 模型文件预检的两种失败。文案是卡里逐字定死的，别改写。
+///
+/// 拆成「缺失」和「无法读取」两类，是因为用户的下一步动作不同：前者多半是
+/// 路径没了/选错了，后者是文件不完整。一句笼统的「模型有问题」等于让人猜。
+enum ModelFileProblem: String {
+    case missing = "model_missing"
+    case unreadable = "model_unreadable"
+
+    var mainMessage: String {
+        switch self {
+        case .missing: return "模型文件未找到"
+        case .unreadable: return "模型文件无法读取"
+        }
+    }
+
+    var detailMessage: String {
+        switch self {
+        case .missing: return "在「设置 › 模型」里重新选择 .bin 文件"
+        case .unreadable: return "文件可能不完整，请重新选择一次"
+        }
+    }
+}
+
+/// spawn 之前对模型文件做的三态判定。
+///
+/// 为什么要预检：whisper 对「文件不存在」和「文件是垃圾」报出来的都是同一类
+/// 通用错误，甚至可能先加载半天才崩。在 app 侧 4 个字节就能分清，没必要把
+/// 进程创建、模型加载的开销和含糊的 stderr 一起付掉。
+enum ModelPreflight {
+    /// whisper 的 ggml 模型动辄几百 MB；小于 1MB 的不可能是能用的模型。
+    /// 阈值卡在 1MB 是卡里定的，宁可把畸形小文件挡在外面。
+    static let minimumBytes: UInt64 = 1_048_576
+    /// GGML_FILE_MAGIC = 0x67676d6c，whisper.cpp 按本机字节序写盘，所以真模型
+    /// 的前 4 字节是 `lmgg` 而不是字面上的 `ggml`（实测 ggml-medium-q5_0.bin
+    /// 开头就是 6c 6d 67 67）。两种都认：只认 `ggml` 会把真模型判成损坏。
+    static let magic = Data("ggml".utf8)
+    static let magicLittleEndian = Data("lmgg".utf8)
+
+    static func check(path: String, fileManager: FileManager = .default) -> ModelFileProblem? {
+        // 先解析符号链接：attributesOfItem 看的是链接本身（大小只有几十字节），
+        // 不解析的话「指向真模型的链接」会被误判成损坏。悬空链接解析后不存在，
+        // 按缺失报。
+        let resolved = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: resolved, isDirectory: &isDirectory) else {
+            return .missing
+        }
+        // 目录不是模型文件；按「无法读取」报，而不是假装它存在就能用。
+        guard !isDirectory.boolValue else { return .unreadable }
+        guard let attributes = try? fileManager.attributesOfItem(atPath: resolved),
+              let size = (attributes[.size] as? NSNumber)?.uint64Value,
+              size >= minimumBytes else {
+            return .unreadable
+        }
+        guard let handle = FileHandle(forReadingAtPath: resolved) else { return .unreadable }
+        defer { try? handle.close() }
+        guard let head = try? handle.read(upToCount: magic.count),
+              head == magic || head == magicLittleEndian else {
+            return .unreadable
+        }
+        return nil
+    }
+}
+
 /// 转写失败。status 与 handy-transcribe 的退出码一致（0 成功、1 用法/音频、
 /// 2 模型、3 whisper 缺件）；-1 表示调用方根本没找到可执行文件。
 struct TranscribeFailure: Error, CustomStringConvertible {
     let status: Int32
     let stderr: String
     let detail: String?
+    /// 非 nil 表示这次失败是预检判出来的模型问题（没 spawn 进程）。
+    var modelProblem: ModelFileProblem?
+    /// 预检失败时被判定的那个路径，写日志用。
+    var modelPath: String?
 
     var description: String { "transcribe failed status=\(status) \(detail ?? stderr)" }
 
-    /// 给气泡看的一句话：必须能指导下一步，不能只是「失败了」。
+    /// 给气泡看的主文案：必须能指导下一步，不能只是「失败了」。
     var userMessage: String {
+        if let modelProblem { return modelProblem.mainMessage }
         switch status {
         case 2:
-            return "找不到 whisper 模型。把 ggml-*.bin 放到 ~/.cache/whisper.cpp/ 后再试。"
+            // 预检通过后 CLI 仍报 2（文件在预检和加载之间被删了）——按「缺失」
+            // 报，和预检走同一条文案，别让同一个问题有两种说法。
+            return ModelFileProblem.missing.mainMessage
         case 3:
             return "找不到 whisper-cli / whisper-server。先 brew install whisper-cpp，确认在 PATH 里。"
         case -1:
@@ -72,6 +144,19 @@ struct TranscribeFailure: Error, CustomStringConvertible {
             }
             return "转写失败（退出码 \(status)），详见 ~/Library/Caches/handy/whisper-server.log"
         }
+    }
+
+    /// 副文案：模型问题才有，别的失败仍然只给一句主文案。
+    var userDetail: String? {
+        if let modelProblem { return modelProblem.detailMessage }
+        if status == 2 { return ModelFileProblem.missing.detailMessage }
+        return nil
+    }
+
+    /// 气泡实际显示的内容（主文案 + 副文案两行）。
+    var bubbleMessage: String {
+        guard let userDetail else { return userMessage }
+        return userMessage + "\n" + userDetail
     }
 
     static func lastMeaningfulLine(_ stderr: String) -> String? {
@@ -92,6 +177,9 @@ struct TranscribeResult {
     let decodeMS: Int?
     let audioMS: Int?
     let requestPath: String?
+    /// 这次实际用的模型：自定义路径，或 `default`（未设置，交给 CLI 的默认值）。
+    /// 日志 `event=request model=...` 直接用它，避免调用方再猜一遍。
+    let modelLabel: String
 }
 
 /// 调 handy-transcribe 的唯一入口。app 内不做任何解码 / 分段 / 归一——
@@ -103,24 +191,68 @@ final class TranscribeService {
     let location: TranscriberLocation
     let environment: [String: String]
     let logDirectory: URL
+    /// 设置里的自定义模型；nil 表示未设置。设成 var 是为了设置面板改完后
+    /// 不用重启 app：下一次转写前由 AppDelegate 从 AppSettings 重新读进来。
+    var modelPath: String?
 
     init(location: TranscriberLocation = TranscriberResolver.resolve(),
          environment: [String: String] = ProcessInfo.processInfo.environment,
-         logDirectory: URL? = nil) {
+         logDirectory: URL? = nil,
+         modelPath: String? = nil) {
         self.location = location
         self.environment = environment
         self.logDirectory = logDirectory ?? HandyPaths.logDirectory(environment: environment)
+        self.modelPath = HandyPaths.normalizeModelPath(modelPath)
+    }
+
+    /// 模型解析只走这一条：自定义（非空）→ 否则默认路径。
+    /// `passesModelArgument` 为 false 时**不传 `--model`**，让 CLI 用自己的
+    /// 默认值——默认模型只有 CLI 一份真相源。
+    struct ModelPlan: Equatable {
+        let path: String
+        let passesModelArgument: Bool
+        let logLabel: String
+    }
+
+    static func modelPlan(
+        customPath: String?,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        home: String = NSHomeDirectory()
+    ) -> ModelPlan {
+        if let custom = HandyPaths.normalizeModelPath(customPath) {
+            return ModelPlan(path: custom, passesModelArgument: true, logLabel: custom)
+        }
+        let fallback = HandyPaths.defaultModelPath(environment: environment, home: home).path
+        return ModelPlan(path: fallback, passesModelArgument: false, logLabel: "default")
+    }
+
+    /// 纯参数拼装，单测直接钉住「未设置不传 --model」这条。
+    static func arguments(wavPath: String, modelPath: String?) -> [String] {
+        var arguments = [wavPath]
+        if let model = HandyPaths.normalizeModelPath(modelPath) {
+            arguments.append(contentsOf: ["--model", model])
+        }
+        return arguments
     }
 
     func transcribe(wavURL: URL) throws -> TranscribeResult {
         guard let executable = location.url else {
             throw TranscribeFailure(status: -1, stderr: "", detail: location.source)
         }
+
+        // 预检必须在 spawn 之前：失败就直接抛，不创建进程。这样既能省一次
+        // 进程创建，也不会让 CLI 的通用错误盖掉「缺失」和「损坏」的区别。
+        let plan = Self.modelPlan(customPath: modelPath, environment: environment)
+        if let problem = ModelPreflight.check(path: plan.path) {
+            throw TranscribeFailure(status: 2, stderr: "", detail: "preflight",
+                                    modelProblem: problem, modelPath: plan.path)
+        }
+
         let logOffset = Self.fileSize(logDirectory.appendingPathComponent("whisper-server.log"))
 
         let process = Process()
         process.executableURL = executable
-        process.arguments = [wavURL.path]
+        process.arguments = Self.arguments(wavPath: wavURL.path, modelPath: modelPath)
         process.environment = Self.childEnvironment(from: environment)
         let stdout = Pipe()
         let stderr = Pipe()
@@ -170,7 +302,8 @@ final class TranscribeService {
         return TranscribeResult(text: text, wallMS: wallMS,
                                 decodeMS: stats?.decodeMS,
                                 audioMS: stats?.audioMS,
-                                requestPath: stats?.requestPath)
+                                requestPath: stats?.requestPath,
+                                modelLabel: plan.logLabel)
     }
 
     // MARK: - 从 server 日志里读回这一次的 decode_ms

@@ -10,7 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var logger = EventLogger(isEnabled: { [weak self] in
         self?.settings.loggingEnabled ?? true
     })
-    private lazy var transcriber = TranscribeService()
+    private lazy var transcriber = TranscribeService(modelPath: settings.modelPath)
     private lazy var recorder = MicrophoneRecorder()
     private lazy var hotKeyManager = HotKeyManager()
     private lazy var hud = HUD()
@@ -271,7 +271,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             defer { try? FileManager.default.removeItem(at: wav) }   // 音频不留在盘上
             do {
+                // 设置面板改完模型立即生效：每次转写前从 AppSettings 重新读，
+                // 不用重启 app，也不会拿着构造时的旧路径跑。
+                self.transcriber.modelPath = self.settings.modelPath
                 let result = try self.transcriber.transcribe(wavURL: wav)
+                self.logger.write(event: "request", fields: [("model", result.modelLabel)])
                 self.logger.write(event: "transcribe", fields: [
                     ("ms", "\(result.wallMS)"),
                     ("decode_ms", result.decodeMS.map(String.init) ?? "-"),
@@ -292,13 +296,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                 }
             } catch let failure as TranscribeFailure {
-                self.logger.write(event: "error", fields: [
-                    ("stage", "transcribe"),
-                    ("code", "exit\(failure.status)"),
-                ])
-                FileHandle.standardError.write(Data(("handy: " + failure.userMessage + "\n").utf8))
+                if let problem = failure.modelProblem {
+                    // 预检失败没 spawn 进程：日志里直接写具体原因和路径，
+                    // 不要落成 exit2 那种需要再猜的码。
+                    self.logger.write(event: "error", fields: [
+                        ("code", problem.rawValue),
+                        ("path", failure.modelPath ?? "-"),
+                    ])
+                } else {
+                    self.logger.write(event: "error", fields: [
+                        ("stage", "transcribe"),
+                        ("code", "exit\(failure.status)"),
+                    ])
+                }
+                FileHandle.standardError.write(Data(("handy: " + failure.bubbleMessage + "\n").utf8))
                 DispatchQueue.main.async {
-                    self.hud.show(failure.userMessage, isError: true)
+                    self.hud.show(failure.bubbleMessage, isError: true)
                 }
             } catch {
                 self.logger.write(event: "error", fields: [("stage", "transcribe"),
@@ -327,6 +340,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             controller.onLoggingChange = { [weak self] enabled in
                 self?.settings.setLoggingEnabled(enabled)
+            }
+            controller.onModelChange = { [weak self] path in
+                // 只记一笔；真正生效在 process() 里从 AppSettings 重读，
+                // 避免在这里跨线程改 transcriber 的状态。
+                self?.logger.write(event: "settings", fields: [("model", path ?? "default")])
             }
             settingsController = controller
         }

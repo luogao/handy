@@ -1,0 +1,128 @@
+import Foundation
+import Testing
+@testable import Handy
+
+// MARK: - modelPath 键的读写
+
+private func makeDefaults() -> (UserDefaults, String) {
+    let name = "HandyTests.\(UUID().uuidString)"
+    return (UserDefaults(suiteName: name)!, name)
+}
+
+@Test func 未设置模型路径时返回nil() {
+    let (defaults, name) = makeDefaults()
+    defer { defaults.removePersistentDomain(forName: name) }
+    let settings = AppSettings(defaults: defaults)
+    #expect(settings.modelPath == nil)
+}
+
+@Test func 设置后持久化并读回绝对路径() {
+    let (defaults, name) = makeDefaults()
+    defer { defaults.removePersistentDomain(forName: name) }
+    AppSettings(defaults: defaults).setModelPath("/tmp/models/m.bin")
+
+    let reloaded = AppSettings(defaults: defaults)
+    #expect(reloaded.modelPath == "/tmp/models/m.bin")
+    #expect(defaults.string(forKey: AppSettings.Key.modelPath) == "/tmp/models/m.bin")
+}
+
+@Test func 空串与全空白按未设置处理() {
+    let (defaults, name) = makeDefaults()
+    defer { defaults.removePersistentDomain(forName: name) }
+    let settings = AppSettings(defaults: defaults)
+
+    settings.setModelPath("/tmp/models/m.bin")
+    settings.setModelPath("   ")
+    #expect(settings.modelPath == nil)
+    // 不能留一个空字符串键，否则 defaults read 看起来像「设置过」。
+    #expect(defaults.object(forKey: AppSettings.Key.modelPath) == nil)
+
+    settings.setModelPath("/tmp/models/m.bin")
+    settings.setModelPath("")
+    #expect(settings.modelPath == nil)
+    #expect(defaults.object(forKey: AppSettings.Key.modelPath) == nil)
+}
+
+@Test func 相对路径归一成绝对路径() throws {
+    let (defaults, name) = makeDefaults()
+    defer { defaults.removePersistentDomain(forName: name) }
+    let settings = AppSettings(defaults: defaults)
+
+    settings.setModelPath("relative/model.bin")
+    let stored = try #require(settings.modelPath)
+    #expect(stored.hasPrefix("/"))
+    #expect(stored.hasSuffix("/relative/model.bin"))
+}
+
+@Test func 波浪号会展开成绝对路径() {
+    let (defaults, name) = makeDefaults()
+    defer { defaults.removePersistentDomain(forName: name) }
+    let settings = AppSettings(defaults: defaults)
+
+    settings.setModelPath("~/models/m.bin")
+    #expect(settings.modelPath == NSHomeDirectory() + "/models/m.bin")
+}
+
+@Test func 中文与空格路径原样保留不编码() {
+    let (defaults, name) = makeDefaults()
+    defer { defaults.removePersistentDomain(forName: name) }
+    let settings = AppSettings(defaults: defaults)
+    let path = "/tmp/测试 目录/模型 文件.bin"
+
+    settings.setModelPath(path)
+    #expect(settings.modelPath == path)
+    #expect(!(settings.modelPath ?? "").contains("%20"))
+    #expect(!(settings.modelPath ?? "").contains("%E6"))
+}
+
+@Test func 恢复默认会删掉键() {
+    let (defaults, name) = makeDefaults()
+    defer { defaults.removePersistentDomain(forName: name) }
+    let settings = AppSettings(defaults: defaults)
+
+    settings.setModelPath("/tmp/models/m.bin")
+    settings.setModelPath(nil)
+    #expect(settings.modelPath == nil)
+    #expect(defaults.object(forKey: AppSettings.Key.modelPath) == nil)
+}
+
+// MARK: - 默认路径与展示
+
+@Test func 默认模型路径和CLI保持一致() {
+    let path = HandyPaths.defaultModelPath(environment: [:], home: "/Users/someone").path
+    #expect(path == "/Users/someone/.cache/whisper.cpp/ggml-medium-q5_0.bin")
+}
+
+@Test func 默认模型路径可被HANDY_MODEL覆盖() {
+    let path = HandyPaths.defaultModelPath(
+        environment: ["HANDY_MODEL": "/tmp/测试 模型.bin"], home: "/Users/someone"
+    ).path
+    #expect(path == "/tmp/测试 模型.bin")
+}
+
+@Test func 生效路径文案区分默认与自定义() {
+    #expect(HandyPaths.modelPathDescription(customPath: nil, environment: [:],
+                                            home: "/Users/someone")
+            == "默认：~/.cache/whisper.cpp/ggml-medium-q5_0.bin")
+    #expect(HandyPaths.modelPathDescription(customPath: "/tmp/测试 目录/m.bin",
+                                            environment: [:], home: "/Users/someone")
+            == "自定义：/tmp/测试 目录/m.bin")
+}
+
+// MARK: - 模型解析（未设置不传 --model）
+
+@Test func 未设置时用默认路径且不传model参数() {
+    let plan = TranscribeService.modelPlan(customPath: nil, environment: [:],
+                                           home: "/Users/someone")
+    #expect(plan.path == "/Users/someone/.cache/whisper.cpp/ggml-medium-q5_0.bin")
+    #expect(!plan.passesModelArgument)
+    #expect(plan.logLabel == "default")
+}
+
+@Test func 设置后解析成自定义路径() {
+    let plan = TranscribeService.modelPlan(customPath: "~/models/m.bin", environment: [:],
+                                           home: NSHomeDirectory())
+    #expect(plan.path == NSHomeDirectory() + "/models/m.bin")
+    #expect(plan.passesModelArgument)
+    #expect(plan.logLabel == NSHomeDirectory() + "/models/m.bin")
+}

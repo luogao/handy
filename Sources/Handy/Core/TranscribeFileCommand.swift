@@ -14,7 +14,8 @@ enum TranscribeFileCommand {
         }
         let wavPath = (arguments[flagIndex + 1] as NSString).expandingTildeInPath
         let asJSON = arguments.contains("--json")
-        let service = TranscribeService()
+        // 和 GUI 走同一份设置：否则设置里选了自定义模型，时延验收量的还是默认模型。
+        let service = TranscribeService(modelPath: AppSettings().modelPath)
 
         guard FileManager.default.fileExists(atPath: wavPath) else {
             emitFailure(status: 2, message: "音频不存在：\(wavPath)", wav: wavPath, asJSON: asJSON)
