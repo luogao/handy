@@ -13,6 +13,9 @@ let package = Package(
             path: "Sources/Handy",
             linkerSettings: [
                 .linkedFramework("AppKit"),
+                // P1：录音用 AVFoundation，全局热键用 Carbon（RegisterEventHotKey，零 TCC）。
+                .linkedFramework("AVFoundation"),
+                .linkedFramework("Carbon"),
             ]),
         .testTarget(
             name: "HandyTests",

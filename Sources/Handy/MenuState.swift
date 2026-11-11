@@ -1,10 +1,9 @@
 import Foundation
 
-/// 菜单栏在 P0 只有两态：没在录 / 正在录。
+/// 菜单栏只有两态：没在录 / 正在录。转写发生在后台队列，不占这个状态——
+/// 用户在等转写时再按一次热键应该能立刻开始下一段录音。
 ///
-/// P0 不录音，这个状态唯一的用途是证明「点一下 → 文案变 → 再点变回来」这条
-/// 交互链路是通的；P1 把 AVAudioEngine 的启停挂到同一组 API 上，菜单和测试
-/// 都不用改。放在没有 AppKit 的文件里，是为了能脱离 UI 单测。
+/// 放在没有 AppKit 的文件里，是为了能脱离 UI 单测。
 enum RecordingState: String, Equatable, Sendable {
     case idle
     case listening
@@ -23,11 +22,17 @@ enum RecordingState: String, Equatable, Sendable {
     }
 }
 
-/// 菜单文案只有这一份来源：真实菜单和 `--dump-menu` 自检读同一处，
+/// 菜单/气泡文案只有这一份来源：真实菜单、`--dump-menu` 自检和测试读同一处，
 /// 免得验收时看到的字和测试里断言的字不是同一个。
 enum MenuCopy {
     static let settings = "设置…"
     static let quit = "退出"
+    /// 气泡文案是卡里写死的，别在调用处另写一份。
+    static let copiedHint = "已复制，⌘V 粘贴"
+
+    static func holdToTalk(_ hotkey: String) -> String {
+        "按住 \(hotkey) 说话"
+    }
 }
 
 /// 版本号以 Info.plist 为准（打包后读 bundle），直接跑 `.build/debug/Handy`
