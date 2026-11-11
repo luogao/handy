@@ -50,7 +50,14 @@ die() {
 }
 warn() { printf '注意：%s\n' "$*" >&2; }
 
-model_key_mode() { defaults read "$BUNDLE_ID" "$KEY_MODEL" >/dev/null 2>&1 && return 0 || return 1; }
+model_key_mode() { defaults read "$BUNDLE_ID" "$KEY_MODEL" >/dev/null 2>&1; }
+
+# defaults read 输出会把中文转成 \uXXXX 字面量，再 defaults write 回去就存成了假中文。
+# 走 plutil raw 才能拿到真正的 UTF-8 字符串。
+model_path_read() {
+  defaults export "$BUNDLE_ID" - 2>/dev/null \
+    | plutil -extract "$KEY_MODEL" raw -o - - 2>/dev/null
+}
 
 state_get() { [ -f "$STATE_FILE" ] && grep -E "^$1=" "$STATE_FILE" | head -1 | cut -d= -f2- || true; }
 state_set() { mkdir -p "$STATE_DIR" || die "无法创建 $STATE_DIR"; printf '%s=%s\n' "$1" "$2" >> "$STATE_FILE"; }
@@ -120,7 +127,7 @@ trap cleanup_on_signal INT TERM HUP
 cmd_status() {
   say "── 当前状态 ──"
   say "bundle id   : $BUNDLE_ID"
-  say "模型键      : $(model_key_mode && defaults read "$BUNDLE_ID" "$KEY_MODEL" || echo '无（当前实现不读 modelPath，用默认模型）')"
+  say "模型键      : $(model_key_mode && model_path_read || echo '无（未设置，用默认模型）')"
   say "默认模型    : $([ -f "$MODEL_FILE" ] && echo "存在 $(du -h "$MODEL_FILE" | cut -f1)" || echo 缺失) ($MODEL_FILE)"
   say "隐藏位      : $([ -f "$HIDDEN" ] && echo "有残留 $(du -h "$HIDDEN" | cut -f1)" || echo 空)"
   say "app 进程    : $(pgrep -f 'Handy.app/Contents/MacOS/Handy' | tr '\n' ' ')"
@@ -130,10 +137,19 @@ cmd_status() {
 cmd_model_missing() {
   local app; app="$(find_app)" || die "找不到 Handy.app（先在 handy/ 下跑 ./scripts/bundle.sh）"
   quit_app
-  if model_key_mode; then
-    warn "检测到 modelPath 键存在：改为直接写坏路径（不改文件）"
-    cp -n "$STATE_FILE" "$STATE_FILE.bak" 2>/dev/null || true
-    defaults write "$BUNDLE_ID" "$KEY_MODEL" -string "/nonexistent/ggml-medium-q5_0.bin"
+  if model_key_mode || [ "$(state_get MODEL_STATE)" = "SET" ]; then
+    # 已经有快照就不再覆盖，否则重复跑会把测试值当成原值存下来
+    if [ -z "$(state_get MODEL_STATE)" ]; then
+      if model_key_mode; then
+        state_set MODEL_STATE SET
+        state_set MODEL_ORIG "$(model_path_read)"
+        say "· 已快照原 modelPath=$(state_get MODEL_ORIG)"
+      else
+        state_set MODEL_STATE UNSET
+      fi
+    fi
+    defaults write "$BUNDLE_ID" "$KEY_MODEL" -string "/nonexistent/ggml-medium-q5_0.bin" \
+      || die "写入 modelPath 失败"
     say "✓ modelPath=/nonexistent/ggml-medium-q5_0.bin"
   else
     hide_model
@@ -202,8 +218,28 @@ cmd_transcribe_kill() {
 
 cmd_restore() {
   local did=0
-  if model_key_mode; then
-    defaults delete "$BUNDLE_ID" "$KEY_MODEL" 2>/dev/null && { say "✓ 已删除测试用 modelPath"; did=1; }
+  local mstate; mstate="$(state_get MODEL_STATE)"
+  if [ -n "$mstate" ]; then
+    case "$mstate" in
+      SET)
+        local want cur; want="$(state_get MODEL_ORIG)"
+        cur="$(model_path_read)"
+        if [ "$cur" = "$want" ]; then
+          say "· modelPath 已是原值：$want"
+        elif defaults write "$BUNDLE_ID" "$KEY_MODEL" -string "$want"; then
+          say "✓ 已恢复原 modelPath=$want"
+          did=1
+        else
+          die "恢复 modelPath 失败，原值：$want"
+        fi
+        ;;
+      UNSET)
+        defaults delete "$BUNDLE_ID" "$KEY_MODEL" 2>/dev/null && { say "✓ 已删除测试用 modelPath"; did=1; }
+        ;;
+    esac
+  elif model_key_mode; then
+    # 没有快照却有键：不是本脚本写的，不动它
+    warn "modelPath 存在但本脚本没写过（$(model_path_read)），不删不改"
   fi
   if [ -f "$HIDDEN" ]; then
     put_model_back || die "模型恢复失败"
