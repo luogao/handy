@@ -9,7 +9,8 @@ on:
 jobs:
   build-test:
     name: build & test (macOS)
-    runs-on: macos-14
+    # macos-latest：公开仓库免费额度里最稳的标签，arm64/x86 都由 GitHub 分配
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
