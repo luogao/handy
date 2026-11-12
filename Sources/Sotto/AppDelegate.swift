@@ -402,6 +402,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
+        // 自检入口：不经过 Carbon 热键、不经过菜单，直接走「按下 → 录 N 秒 → 松开」。
+        // 用来把「UI 没收到事件」和「录音链路坏了」这两件事分开。
+        if let index = arguments.firstIndex(of: "--test-record") {
+            let seconds = (index + 1 < arguments.count ? Double(arguments[index + 1]) : nil) ?? 3
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                guard let self else { return }
+                print("test_record_start=\(seconds)s")
+                self.hotKeyPressed()
+                DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
+                    self.hotKeyReleased()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 8) { NSApp.terminate(nil) }
+                }
+            }
+        }
+
         if arguments.contains("--demo-settings") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
                 self?.openSettings()
