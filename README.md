@@ -5,6 +5,12 @@
 <h1 align="center">Sotto</h1>
 
 <p align="center">
+  <a href="https://luogao.github.io/sotto/">官网</a> ·
+  <a href="https://github.com/luogao/sotto/releases">下载</a> ·
+  <a href="docs/ENGINEERING.md">工程笔记</a>
+</p>
+
+<p align="center">
 按住 <kbd>⌃</kbd><kbd>⌥</kbd><kbd>H</kbd> 说话，松手，文字进剪贴板。<br>
 音频不出本机，不申请辅助功能权限，不监听键盘。
 </p>
