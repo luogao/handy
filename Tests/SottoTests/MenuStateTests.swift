@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import Handy
+@testable import Sotto
 
 @Test func 初始状态与文案() {
     #expect(RecordingState.idle.actionTitle == "开始")
@@ -25,19 +25,19 @@ import Testing
 @Test func InfoPlist的固定值没被改坏() throws {
     // bundle id / 可执行名是 P1 麦克风授权的键：TCC 按 bundle id + 签名记账，
     // 这几个值一变，已经授权过的机器要重新弹一次授权。用测试把它们钉死。
-    let handyDir = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()   // HandyTests
+    let sottoDir = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()   // SottoTests
         .deletingLastPathComponent()   // Tests
-        .deletingLastPathComponent()   // handy/
-    let data = try Data(contentsOf: handyDir.appendingPathComponent("Resources/Info.plist"))
+        .deletingLastPathComponent()   // sotto/
+    let data = try Data(contentsOf: sottoDir.appendingPathComponent("Resources/Info.plist"))
     let plist = try #require(
         PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
     )
 
-    #expect(plist["CFBundleIdentifier"] as? String == "top.rungundam.handy")
-    #expect(plist["CFBundleName"] as? String == "Handy")
-    #expect(plist["CFBundleExecutable"] as? String == "Handy")
-    #expect(plist["CFBundleDisplayName"] as? String == "Handy")
+    #expect(plist["CFBundleIdentifier"] as? String == "top.rungundam.sotto")
+    #expect(plist["CFBundleName"] as? String == "Sotto")
+    #expect(plist["CFBundleExecutable"] as? String == "Sotto")
+    #expect(plist["CFBundleDisplayName"] as? String == "Sotto")
     #expect(plist["CFBundleShortVersionString"] as? String == "0.1.0")
     #expect(plist["CFBundleVersion"] as? String == "010")
     #expect(plist["LSMinimumSystemVersion"] as? String == "13.0")

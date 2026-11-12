@@ -1,23 +1,23 @@
 import Foundation
 
-/// 运行期用到的目录。全部走环境变量可覆盖，和 handy-mic / handy-transcribe 的
-/// 既有约定一致（测试并行跑时用 HANDY_LOG_DIR / HANDY_RECORD_DIR 隔离）。
-enum HandyPaths {
+/// 运行期用到的目录。全部走环境变量可覆盖，和 sotto-mic / sotto-transcribe 的
+/// 既有约定一致（测试并行跑时用 SOTTO_LOG_DIR / SOTTO_RECORD_DIR 隔离）。
+enum SottoPaths {
     static func logDirectory(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         home: String = NSHomeDirectory()
     ) -> URL {
-        if let value = environment["HANDY_LOG_DIR"], !value.isEmpty {
+        if let value = environment["SOTTO_LOG_DIR"], !value.isEmpty {
             return URL(fileURLWithPath: (value as NSString).expandingTildeInPath)
         }
-        return URL(fileURLWithPath: home).appendingPathComponent("Library/Caches/handy")
+        return URL(fileURLWithPath: home).appendingPathComponent("Library/Caches/sotto")
     }
 
     static func recordingsDirectory(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         home: String = NSHomeDirectory()
     ) -> URL {
-        if let value = environment["HANDY_RECORD_DIR"], !value.isEmpty {
+        if let value = environment["SOTTO_RECORD_DIR"], !value.isEmpty {
             return URL(fileURLWithPath: (value as NSString).expandingTildeInPath)
         }
         return logDirectory(environment: environment, home: home)
@@ -26,14 +26,14 @@ enum HandyPaths {
 
     /// 默认 whisper 模型在哪，全 app 只在这里回答一次。
     ///
-    /// 和 handy-transcribe 的默认值保持同一个文件；app 不复制一份常量，否则
-    /// 两边升级时容易一边改了另一边没改。`HANDY_MODEL` 是测试用的覆盖点：
+    /// 和 sotto-transcribe 的默认值保持同一个文件；app 不复制一份常量，否则
+    /// 两边升级时容易一边改了另一边没改。`SOTTO_MODEL` 是测试用的覆盖点：
     /// 预检 / 展示可以指向临时文件，不用碰 500MB 的真模型。
     static func defaultModelPath(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         home: String = NSHomeDirectory()
     ) -> URL {
-        if let value = environment["HANDY_MODEL"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+        if let value = environment["SOTTO_MODEL"]?.trimmingCharacters(in: .whitespacesAndNewlines),
            !value.isEmpty {
             return URL(fileURLWithPath: (value as NSString).expandingTildeInPath)
                 .standardizedFileURL

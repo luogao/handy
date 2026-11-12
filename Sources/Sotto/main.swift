@@ -5,12 +5,12 @@ import AppKit
 let arguments = CommandLine.arguments
 
 let usage = """
-Handy — 按住热键说话，松手把文字放进剪贴板
+Sotto — 按住热键说话，松手把文字放进剪贴板
 
 用法：
-  Handy                                    启动菜单栏 app（默认 ⌃⌥H）
-  Handy --transcribe-file <wav> [--json]   只跑转写（时延验收用）
-  Handy --help
+  Sotto                                    启动菜单栏 app（默认 ⌃⌥H）
+  Sotto --transcribe-file <wav> [--json]   只跑转写（时延验收用）
+  Sotto --help
 
 调试入口：
   --demo                 启动后展开菜单（截图）
@@ -50,6 +50,6 @@ let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate
 // 菜单栏 app 不该出现在 Dock / ⌘Tab。打包后靠 Info.plist 的 LSUIElement，
-// 直接跑 .build/debug/Handy 没有 plist 可读，所以这里再显式设一次。
+// 直接跑 .build/debug/Sotto 没有 plist 可读，所以这里再显式设一次。
 app.setActivationPolicy(.accessory)
 app.run()

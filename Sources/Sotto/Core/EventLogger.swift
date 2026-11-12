@@ -14,8 +14,8 @@ final class EventLogger {
     init(directory: URL? = nil,
          environment: [String: String] = ProcessInfo.processInfo.environment,
          isEnabled: @escaping () -> Bool) {
-        let dir = directory ?? HandyPaths.logDirectory(environment: environment)
-        self.fileURL = dir.appendingPathComponent("handy.log")
+        let dir = directory ?? SottoPaths.logDirectory(environment: environment)
+        self.fileURL = dir.appendingPathComponent("sotto.log")
         self.isEnabled = isEnabled
     }
 

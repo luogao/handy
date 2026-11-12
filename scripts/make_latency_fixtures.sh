@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # 生成时延验收用的两段 fixture：12.680s / 24.000s（16kHz 单声道 16bit）。
 #
-# 文本取 apps/handy/tests/chain.sh 里 lat12 / lat24 的原文——那是仓库里唯一
+# 文本取 apps/sotto/tests/chain.sh 里 lat12 / lat24 的原文——那是仓库里唯一
 # 现成的、被回归闸门用过的口述文本。say 合成后用 stdlib 的 wave 裁/补到精确
 # 时长（长音频截尾，短音频补静音），保证每台机器量的是同一段时长。
 #
 # 产物写 .build/fixtures/（gitignore），不提交二进制。
-# 用法：bash handy/scripts/make_latency_fixtures.sh
+# 用法：bash sotto/scripts/make_latency_fixtures.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
 OUT=".build/fixtures"

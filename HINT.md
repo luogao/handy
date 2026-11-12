@@ -1,12 +1,12 @@
 # 第 2 段验收记录
 
-2026-11-04，Mac mini（Mac16,10 / M4），macOS 26.5。装置：`./handy/handy-menubar`（常驻）+ `./handy/handy-clip` / `./handy/handy-hint`。
+2026-11-04，Mac mini（Mac16,10 / M4），macOS 26.5。装置：`./sotto/sotto-menubar`（常驻）+ `./sotto/sotto-clip` / `./sotto/sotto-hint`。
 
-日志：`~/Library/Caches/handy/hint.log`，ISO8601 带毫秒。`since_write_ms` = 收到触发时离写入时间戳的毫秒差；`after_ms` = 面板从首次显示到最后隐藏的时长。
+日志：`~/Library/Caches/sotto/hint.log`，ISO8601 带毫秒。`since_write_ms` = 收到触发时离写入时间戳的毫秒差；`after_ms` = 面板从首次显示到最后隐藏的时长。
 
 ## 1. 写入 → 提示 ≤ 200ms
 
-真实链路（`handy-clip` 写剪贴板后发触发）：
+真实链路（`sotto-clip` 写剪贴板后发触发）：
 
 ```
 11:45:13.119Z recv trigger=1 since_write_ms=1 sound=on text=已复制到剪贴板
@@ -20,7 +20,7 @@
 11:47:52.947Z recv trigger=1 since_write_ms=1 sound=on text=已复制到剪贴板
 ```
 
-预编译的 `handy-hint` 连发 10 次，`since_write_ms` 分别 3/4/3/2/2/2/2/2/2/2 ms，最大 4ms。均远低于 200ms。
+预编译的 `sotto-hint` 连发 10 次，`since_write_ms` 分别 3/4/3/2/2/2/2/2/2/2 ms，最大 4ms。均远低于 200ms。
 
 ## 2. 提示持续可见 ≥ 1.5s
 
@@ -35,18 +35,18 @@
 ## 3. 关提示音 → 重启仍静音
 
 ```
-$ ./handy/handy-hint --sound off
+$ ./sotto/sotto-hint --sound off
 sound=off
 （ps 确认旧进程退出后重启）
-11:45:35.573Z app_start pid=36906 sound_default=off settings=.../Handy/settings.plist
+11:45:35.573Z app_start pid=36906 sound_default=off settings=.../Sotto/settings.plist
 11:45:35.952Z recv trigger=1 since_write_ms=2 sound=off text=重启后提示
 ```
 
-设置落在 `~/Library/Application Support/Handy/settings.plist`（0600）。测完已 `--sound on` 复位成默认有声音。
+设置落在 `~/Library/Application Support/Sotto/settings.plist`（0600）。测完已 `--sound on` 复位成默认有声音。
 
 ## 4. 连按 10 次：不崩、不堆叠
 
-10 次调用在 1885ms 内发完（`swiftc -O` 预编译的 handy-hint；脚本模式每次现编译约 0.6s，行为一致）：
+10 次调用在 1885ms 内发完（`swiftc -O` 预编译的 sotto-hint；脚本模式每次现编译约 0.6s，行为一致）：
 
 ```
 11:46:39.267Z recv trigger=2  ... text=连按第1次
@@ -67,7 +67,7 @@ sound=off
 源码里没有 AX / CGEvent 调用，grep 命中的三处都是注释：
 
 ```
-$ grep -nE 'AXUIElement|AXIsProcessTrusted|CGEvent|CGPreflight' handy/handy-* | grep -v '//'
+$ grep -nE 'AXUIElement|AXIsProcessTrusted|CGEvent|CGPreflight' sotto/sotto-* | grep -v '//'
 （无输出）
 ```
 
@@ -78,4 +78,4 @@ $ grep -nE 'AXUIElement|AXIsProcessTrusted|CGEvent|CGPreflight' handy/handy-* | 
 - 只验了单屏；多屏时按鼠标所在屏放右上角，没实测。
 - 可见时长固定 2.0s，没做可配置。
 - 提示音用 `NSSound` 播系统 `Pop.aiff`，没测蓝牙耳机 / 输出设备切换。
-- 没有 launchd 守护，进程被杀就没提示（`handy-clip` 仍能正常写入）。
+- 没有 launchd 守护，进程被杀就没提示（`sotto-clip` 仍能正常写入）。

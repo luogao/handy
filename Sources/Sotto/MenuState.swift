@@ -35,10 +35,10 @@ enum MenuCopy {
     }
 }
 
-/// 版本号以 Info.plist 为准（打包后读 bundle），直接跑 `.build/debug/Handy`
+/// 版本号以 Info.plist 为准（打包后读 bundle），直接跑 `.build/debug/Sotto`
 /// 时没有 bundle，退回开发版标记，避免日志里出现一个假的正式版本号。
 enum AppInfo {
-    static let name = "Handy"
+    static let name = "Sotto"
 
     static var version: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String

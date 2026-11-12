@@ -1,6 +1,6 @@
 import Foundation
 
-/// handy-transcribe 的位置。app 只是调用方：P1 从仓库 handy/ 目录调，
+/// sotto-transcribe 的位置。app 只是调用方：P1 从仓库 sotto/ 目录调，
 /// P2 把二进制塞进 Contents/Resources/bin/ 后只换来源，调用方一行不用改。
 struct TranscriberLocation {
     let url: URL?
@@ -10,8 +10,8 @@ struct TranscriberLocation {
 }
 
 enum TranscriberResolver {
-    /// 优先级：HANDY_TRANSCRIBE 环境变量 > bundle 内 Resources/bin > 从可执行文件
-    /// 向上找 handy-transcribe（开发态 .build/debug/Handy 与 build/Handy.app 都靠这条）。
+    /// 优先级：SOTTO_TRANSCRIBE 环境变量 > bundle 内 Resources/bin > 从可执行文件
+    /// 向上找 sotto-transcribe（开发态 .build/debug/Sotto 与 build/Sotto.app 都靠这条）。
     ///
     /// 环境变量指了但文件不可执行时**不回退**：静默换一个二进制跑，会让人以为
     /// 覆盖点生效了，实际调的还是旧的。
@@ -21,14 +21,14 @@ enum TranscriberResolver {
         executableURL: URL = URL(fileURLWithPath: CommandLine.arguments[0]),
         isExecutable: (String) -> Bool = FileManager.default.isExecutableFile(atPath:)
     ) -> TranscriberLocation {
-        if let override = environment["HANDY_TRANSCRIBE"], !override.isEmpty {
+        if let override = environment["SOTTO_TRANSCRIBE"], !override.isEmpty {
             let url = URL(fileURLWithPath: (override as NSString).expandingTildeInPath)
             return TranscriberLocation(url: isExecutable(url.path) ? url : nil,
-                                       source: "HANDY_TRANSCRIBE")
+                                       source: "SOTTO_TRANSCRIBE")
         }
 
         if let resources = bundleResourceURL {
-            let bundled = resources.appendingPathComponent("bin/handy-transcribe")
+            let bundled = resources.appendingPathComponent("bin/sotto-transcribe")
             if isExecutable(bundled.path) {
                 return TranscriberLocation(url: bundled, source: "bundle")
             }
@@ -36,7 +36,7 @@ enum TranscriberResolver {
 
         var directory = executableURL.resolvingSymlinksInPath().deletingLastPathComponent()
         for _ in 0..<6 {
-            let candidate = directory.appendingPathComponent("handy-transcribe")
+            let candidate = directory.appendingPathComponent("sotto-transcribe")
             if isExecutable(candidate.path) {
                 return TranscriberLocation(url: candidate, source: "dev")
             }
@@ -113,7 +113,7 @@ enum ModelPreflight {
     }
 }
 
-/// 转写失败。status 与 handy-transcribe 的退出码一致（0 成功、1 用法/音频、
+/// 转写失败。status 与 sotto-transcribe 的退出码一致（0 成功、1 用法/音频、
 /// 2 模型、3 whisper 缺件）；-1 表示调用方根本没找到可执行文件。
 struct TranscribeFailure: Error, CustomStringConvertible {
     let status: Int32
@@ -137,12 +137,12 @@ struct TranscribeFailure: Error, CustomStringConvertible {
         case 3:
             return "找不到 whisper-cli / whisper-server。先 brew install whisper-cpp，确认在 PATH 里。"
         case -1:
-            return "找不到 handy-transcribe。开发态请在 handy/ 目录下运行，或用 HANDY_TRANSCRIBE 指定。"
+            return "找不到 sotto-transcribe。开发态请在 sotto/ 目录下运行，或用 SOTTO_TRANSCRIBE 指定。"
         default:
             if let last = Self.lastMeaningfulLine(stderr) {
                 return "转写失败：\(last)"
             }
-            return "转写失败（退出码 \(status)），详见 ~/Library/Caches/handy/whisper-server.log"
+            return "转写失败（退出码 \(status)），详见 ~/Library/Caches/sotto/whisper-server.log"
         }
     }
 
@@ -164,7 +164,7 @@ struct TranscribeFailure: Error, CustomStringConvertible {
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
             .last?
-            .replacingOccurrences(of: "handy-transcribe: ", with: "")
+            .replacingOccurrences(of: "sotto-transcribe: ", with: "")
     }
 }
 
@@ -172,7 +172,7 @@ struct TranscribeResult {
     let text: String
     /// app 看到的总耗时（从 spawn 到进程退出，含进程启动和读音频）。
     let wallMS: Int
-    /// handy-transcribe 自己写进 request 事件的 decode_ms。拿不到就是 nil
+    /// sotto-transcribe 自己写进 request 事件的 decode_ms。拿不到就是 nil
     /// （走了 CLI 路径 / 日志被轮转掉了）。
     let decodeMS: Int?
     let audioMS: Int?
@@ -182,10 +182,10 @@ struct TranscribeResult {
     let modelLabel: String
 }
 
-/// 调 handy-transcribe 的唯一入口。app 内不做任何解码 / 分段 / 归一——
+/// 调 sotto-transcribe 的唯一入口。app 内不做任何解码 / 分段 / 归一——
 /// 那些参数是四张卡验证过的，重写一份就等于把回归基线丢了。
 ///
-/// 不传 `--clip`：剪贴板由 app 自己用 NSPasteboard 写（handy-clip 是 `swift`
+/// 不传 `--clip`：剪贴板由 app 自己用 NSPasteboard 写（sotto-clip 是 `swift`
 /// 解释执行的脚本，起一次要近 1 秒，会把 1.5 秒的时延预算吃掉）。
 final class TranscribeService {
     let location: TranscriberLocation
@@ -201,8 +201,8 @@ final class TranscribeService {
          modelPath: String? = nil) {
         self.location = location
         self.environment = environment
-        self.logDirectory = logDirectory ?? HandyPaths.logDirectory(environment: environment)
-        self.modelPath = HandyPaths.normalizeModelPath(modelPath)
+        self.logDirectory = logDirectory ?? SottoPaths.logDirectory(environment: environment)
+        self.modelPath = SottoPaths.normalizeModelPath(modelPath)
     }
 
     /// 模型解析只走这一条：自定义（非空）→ 否则默认路径。
@@ -219,17 +219,17 @@ final class TranscribeService {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         home: String = NSHomeDirectory()
     ) -> ModelPlan {
-        if let custom = HandyPaths.normalizeModelPath(customPath) {
+        if let custom = SottoPaths.normalizeModelPath(customPath) {
             return ModelPlan(path: custom, passesModelArgument: true, logLabel: custom)
         }
-        let fallback = HandyPaths.defaultModelPath(environment: environment, home: home).path
+        let fallback = SottoPaths.defaultModelPath(environment: environment, home: home).path
         return ModelPlan(path: fallback, passesModelArgument: false, logLabel: "default")
     }
 
     /// 纯参数拼装，单测直接钉住「未设置不传 --model」这条。
     static func arguments(wavPath: String, modelPath: String?) -> [String] {
         var arguments = [wavPath]
-        if let model = HandyPaths.normalizeModelPath(modelPath) {
+        if let model = SottoPaths.normalizeModelPath(modelPath) {
             arguments.append(contentsOf: ["--model", model])
         }
         return arguments
@@ -267,7 +267,7 @@ final class TranscribeService {
                                     detail: "spawn")
         }
 
-        // 两个管道都必须边跑边读：handy-transcribe 往 stderr 打不少行，写满管道
+        // 两个管道都必须边跑边读：sotto-transcribe 往 stderr 打不少行，写满管道
         // 会把子进程卡死，waitUntilExit 就永远不返回。
         var outData = Data()
         var errData = Data()
@@ -308,7 +308,7 @@ final class TranscribeService {
 
     // MARK: - 从 server 日志里读回这一次的 decode_ms
 
-    /// handy-transcribe 每次调用写一条 `event=request ... decode_ms=...`。
+    /// sotto-transcribe 每次调用写一条 `event=request ... decode_ms=...`。
     /// 从「调用前的文件长度」往后读，最后一条 request 就是这一次的。
     /// 日志被轮转/被删都不影响转写本身，只是 decode_ms 变 nil。
     private func requestStats(since offset: UInt64, startedAt: Date)
@@ -323,7 +323,7 @@ final class TranscribeService {
 
         var found: (Int, Int, String)?
         for line in String(decoding: data, as: UTF8.self).split(separator: "\n")
-        where line.contains(" handy event=request ") {
+        where line.contains(" sotto event=request ") {
             // 日志可能在两次调用之间被轮转/重建，防止把上一次（甚至更早）的
             // request 当成本次结果：时间戳必须落在本次调用开始之后。
             if let stamp = line.split(separator: " ").first,
@@ -350,7 +350,7 @@ final class TranscribeService {
     }
 
     /// 从 Finder 双击起的 app 拿到的 PATH 是 launchd 的那份，通常不含 Homebrew
-    /// 的 bin；handy-transcribe 只在 PATH 里找 whisper-cli / whisper-server，
+    /// 的 bin；sotto-transcribe 只在 PATH 里找 whisper-cli / whisper-server，
     /// 不补这两个目录的话 GUI 里会一直报「找不到 whisper」（终端里却好好的）。
     static func childEnvironment(from environment: [String: String]) -> [String: String] {
         var env = environment

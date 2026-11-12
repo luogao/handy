@@ -26,9 +26,9 @@ jobs:
       - name: 打包 .app 冒烟
         run: |
           ./scripts/bundle.sh
-          test -x build/Handy.app/Contents/MacOS/Handy
-          test -x build/Handy.app/Contents/Resources/bin/handy-transcribe
-          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" build/Handy.app/Contents/Info.plist
+          test -x build/Sotto.app/Contents/MacOS/Sotto
+          test -x build/Sotto.app/Contents/Resources/bin/sotto-transcribe
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" build/Sotto.app/Contents/Info.plist
 
       - name: CLI 冒烟（--help 不崩）
-        run: ./handy-transcribe --help | head -3
+        run: ./sotto-transcribe --help | head -3

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# handy P1 失败路径复现脚本 v3
+# sotto P1 失败路径复现脚本 v3
 #
 # v3 与 v2 的关键差别：**模型路径当前没有 defaults 键**。
 #   实际实现（DYVI-123 / 6c7900d）只用了 hotkey.* 和 log.enabled，
@@ -22,20 +22,20 @@
 #   4) 如果将来实现加了 modelPath 键，脚本会优先用它（见 model_key_mode）
 #
 # 环境变量（测试用）：
-#   HANDY_BUNDLE_ID=...     覆盖 bundle id
-#   HANDY_APP=...           指定 Handy.app
-#   HANDY_MODEL_FILE=...    覆盖被操作的模型文件（默认 ~/.cache/whisper.cpp/ggml-medium-q5_0.bin）
-#   HANDY_NO_LAUNCH=1       不启动/不退出 app
+#   SOTTO_BUNDLE_ID=...     覆盖 bundle id
+#   SOTTO_APP=...           指定 Sotto.app
+#   SOTTO_MODEL_FILE=...    覆盖被操作的模型文件（默认 ~/.cache/whisper.cpp/ggml-medium-q5_0.bin）
+#   SOTTO_NO_LAUNCH=1       不启动/不退出 app
 set -uo pipefail
 
-BUNDLE_ID="${HANDY_BUNDLE_ID:-top.rungundam.handy}"
+BUNDLE_ID="${SOTTO_BUNDLE_ID:-top.rungundam.sotto}"
 KEY_MODEL="modelPath"
-MODEL_FILE="${HANDY_MODEL_FILE:-$HOME/.cache/whisper.cpp/ggml-medium-q5_0.bin}"
+MODEL_FILE="${SOTTO_MODEL_FILE:-$HOME/.cache/whisper.cpp/ggml-medium-q5_0.bin}"
 HIDDEN="${MODEL_FILE}.failrepro-hidden"
-STATE_DIR="$HOME/Library/Caches/handy"
+STATE_DIR="$HOME/Library/Caches/sotto"
 STATE_FILE="$STATE_DIR/failrepro-state.txt"
-CACHE="$HOME/Library/Caches/handy"
-NO_LAUNCH="${HANDY_NO_LAUNCH:-0}"
+CACHE="$HOME/Library/Caches/sotto"
+NO_LAUNCH="${SOTTO_NO_LAUNCH:-0}"
 
 say() { printf '%s\n' "$*"; }
 die() {
@@ -63,10 +63,10 @@ state_get() { [ -f "$STATE_FILE" ] && grep -E "^$1=" "$STATE_FILE" | head -1 | c
 state_set() { mkdir -p "$STATE_DIR" || die "无法创建 $STATE_DIR"; printf '%s=%s\n' "$1" "$2" >> "$STATE_FILE"; }
 
 find_app() {
-  if [ -n "${HANDY_APP:-}" ]; then [ -d "$HANDY_APP" ] && { printf '%s\n' "$HANDY_APP"; return 0; }; return 1; fi
+  if [ -n "${SOTTO_APP:-}" ]; then [ -d "$SOTTO_APP" ] && { printf '%s\n' "$SOTTO_APP"; return 0; }; return 1; fi
   local c
-  for c in "$(pwd)/build/Handy.app" "$(pwd)/handy/build/Handy.app" \
-           "/Applications/Handy.app" "$HOME/Documents/Hermes/workshop/handy/build/Handy.app"; do
+  for c in "$(pwd)/build/Sotto.app" "$(pwd)/sotto/build/Sotto.app" \
+           "/Applications/Sotto.app" "$HOME/Documents/Hermes/workshop/sotto/build/Sotto.app"; do
     [ -d "$c" ] && { printf '%s\n' "$c"; return 0; }
   done
   return 1
@@ -76,17 +76,17 @@ quit_app() {
   [ "$NO_LAUNCH" = "1" ] && return 0
   osascript -e "tell application id \"$BUNDLE_ID\" to quit" >/dev/null 2>&1 || true
   sleep 1
-  pkill -f "Handy.app/Contents/MacOS/Handy" >/dev/null 2>&1 || true
+  pkill -f "Sotto.app/Contents/MacOS/Sotto" >/dev/null 2>&1 || true
   sleep 0.5
 }
 
 launch_app() {
   local app="$1"
-  [ "$NO_LAUNCH" = "1" ] && { say "· 跳过启动（HANDY_NO_LAUNCH=1）"; return 0; }
+  [ "$NO_LAUNCH" = "1" ] && { say "· 跳过启动（SOTTO_NO_LAUNCH=1）"; return 0; }
   open "$app" || die "无法启动 $app"
   for _ in {1..10}; do
     sleep 1
-    pgrep -f "Handy.app/Contents/MacOS/Handy" >/dev/null && { say "✓ 已启动：$app"; return 0; }
+    pgrep -f "Sotto.app/Contents/MacOS/Sotto" >/dev/null && { say "✓ 已启动：$app"; return 0; }
   done
   die "启动后 10 秒内进程仍不存在：$app"
 }
@@ -130,12 +130,12 @@ cmd_status() {
   say "模型键      : $(model_key_mode && model_path_read || echo '无（未设置，用默认模型）')"
   say "默认模型    : $([ -f "$MODEL_FILE" ] && echo "存在 $(du -h "$MODEL_FILE" | cut -f1)" || echo 缺失) ($MODEL_FILE)"
   say "隐藏位      : $([ -f "$HIDDEN" ] && echo "有残留 $(du -h "$HIDDEN" | cut -f1)" || echo 空)"
-  say "app 进程    : $(pgrep -f 'Handy.app/Contents/MacOS/Handy' | tr '\n' ' ')"
+  say "app 进程    : $(pgrep -f 'Sotto.app/Contents/MacOS/Sotto' | tr '\n' ' ')"
   say "最近录音    : $([ -f "$CACHE/last-recording.wav" ] && du -h "$CACHE/last-recording.wav" | cut -f1 || echo 无)"
 }
 
 cmd_model_missing() {
-  local app; app="$(find_app)" || die "找不到 Handy.app（先在 handy/ 下跑 ./scripts/bundle.sh）"
+  local app; app="$(find_app)" || die "找不到 Sotto.app（先在 sotto/ 下跑 ./scripts/bundle.sh）"
   quit_app
   if model_key_mode || [ "$(state_get MODEL_STATE)" = "SET" ]; then
     # 已经有快照就不再覆盖，否则重复跑会把测试值当成原值存下来
@@ -169,7 +169,7 @@ EOF
 }
 
 cmd_model_corrupt() {
-  local app; app="$(find_app)" || die "找不到 Handy.app"
+  local app; app="$(find_app)" || die "找不到 Sotto.app"
   quit_app
   hide_model
   head -c 4096 /dev/urandom > "$MODEL_FILE" || { put_model_back; die "无法写入假模型"; }
@@ -191,16 +191,16 @@ cmd_mic_denied() {
   quit_app
   say "→ 重置麦克风授权：tccutil reset Microphone $BUNDLE_ID"
   tccutil reset Microphone "$BUNDLE_ID" 2>&1 | sed 's/^/  /' || warn "tccutil 失败，可手动到 系统设置 › 隐私与安全性 › 麦克风 取消勾选"
-  local app; app="$(find_app)" || die "找不到 Handy.app"
+  local app; app="$(find_app)" || die "找不到 Sotto.app"
   launch_app "$app"
   cat <<'EOF'
 
 现在手动做：
   1. 按住 ⌃⌥H → 系统弹窗 → 点【不允许】
-  2. 期望（卡里指定）：主「需要麦克风权限」/ 副「在系统设置里勾选 Handy 后可继续」
+  2. 期望（卡里指定）：主「需要麦克风权限」/ 副「在系统设置里勾选 Sotto 后可继续」
   3. 再按一次 ⌃⌥H → 应仍显示同一文案，不崩溃、不静默
 
-恢复：系统设置 › 隐私与安全性 › 麦克风 › 勾选 Handy
+恢复：系统设置 › 隐私与安全性 › 麦克风 › 勾选 Sotto
 EOF
 }
 
@@ -255,7 +255,7 @@ cmd_restore() {
   fi
   rm -f "$STATE_FILE" && say "✓ 已清理状态文件"
   [ "$did" = "0" ] && say "· 本次无需改动"
-  local app; app="$(find_app)" || { say "· 找不到 Handy.app，跳过重启"; return 0; }
+  local app; app="$(find_app)" || { say "· 找不到 Sotto.app，跳过重启"; return 0; }
   quit_app; launch_app "$app"; cmd_status
 }
 

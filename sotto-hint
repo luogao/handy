@@ -1,33 +1,33 @@
 #!/usr/bin/env swift
-// handy-hint — 控制 handy-menubar 的提示。
+// sotto-hint — 控制 sotto-menubar 的提示。
 //
-//   ./handy-hint --trigger ["提示文本"]   触发一次提示
-//   ./handy-hint --sound on|off           开/关提示音（设置落盘）
-//   ./handy-hint --status                 查看当前设置
-//   ./handy-hint --help
+//   ./sotto-hint --trigger ["提示文本"]   触发一次提示
+//   ./sotto-hint --sound on|off           开/关提示音（设置落盘）
+//   ./sotto-hint --status                 查看当前设置
+//   ./sotto-hint --help
 //
 // 零权限：用 DistributedNotificationCenter 跟常驻进程通信，不碰 AX / CGEvent。
 import Foundation
 
-let hintName = Notification.Name("com.gaogao.handy.hint")
+let hintName = Notification.Name("com.gaogao.sotto.hint")
 let usage = """
-usage: handy-hint --trigger [text]    触发一次提示
-       handy-hint --sound on|off      开关提示音（落盘，重启生效）
-       handy-hint --status            查看设置
-       handy-hint --help
+usage: sotto-hint --trigger [text]    触发一次提示
+       sotto-hint --sound on|off      开关提示音（落盘，重启生效）
+       sotto-hint --status            查看设置
+       sotto-hint --help
 """
 
 func die(_ msg: String, _ code: Int32 = 1) -> Never {
-    FileHandle.standardError.write(("handy-hint: " + msg + "\n").data(using: .utf8)!)
+    FileHandle.standardError.write(("sotto-hint: " + msg + "\n").data(using: .utf8)!)
     exit(code)
 }
 
 let env = ProcessInfo.processInfo.environment
 let settingsDir: String = {
-    if let d = env["HANDY_SETTINGS_DIR"], !d.isEmpty {
+    if let d = env["SOTTO_SETTINGS_DIR"], !d.isEmpty {
         return (d as NSString).expandingTildeInPath
     }
-    return NSHomeDirectory() + "/Library/Application Support/Handy"
+    return NSHomeDirectory() + "/Library/Application Support/Sotto"
 }()
 let settingsURL = URL(fileURLWithPath: settingsDir).appendingPathComponent("settings.plist")
 let fm = FileManager.default

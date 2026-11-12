@@ -1,11 +1,11 @@
 import Foundation
 import Testing
-@testable import Handy
+@testable import Sotto
 
 // MARK: - modelPath 键的读写
 
 private func makeDefaults() -> (UserDefaults, String) {
-    let name = "HandyTests.\(UUID().uuidString)"
+    let name = "SottoTests.\(UUID().uuidString)"
     return (UserDefaults(suiteName: name)!, name)
 }
 
@@ -89,22 +89,22 @@ private func makeDefaults() -> (UserDefaults, String) {
 // MARK: - 默认路径与展示
 
 @Test func 默认模型路径和CLI保持一致() {
-    let path = HandyPaths.defaultModelPath(environment: [:], home: "/Users/someone").path
+    let path = SottoPaths.defaultModelPath(environment: [:], home: "/Users/someone").path
     #expect(path == "/Users/someone/.cache/whisper.cpp/ggml-medium-q5_0.bin")
 }
 
-@Test func 默认模型路径可被HANDY_MODEL覆盖() {
-    let path = HandyPaths.defaultModelPath(
-        environment: ["HANDY_MODEL": "/tmp/测试 模型.bin"], home: "/Users/someone"
+@Test func 默认模型路径可被SOTTO_MODEL覆盖() {
+    let path = SottoPaths.defaultModelPath(
+        environment: ["SOTTO_MODEL": "/tmp/测试 模型.bin"], home: "/Users/someone"
     ).path
     #expect(path == "/tmp/测试 模型.bin")
 }
 
 @Test func 生效路径文案区分默认与自定义() {
-    #expect(HandyPaths.modelPathDescription(customPath: nil, environment: [:],
+    #expect(SottoPaths.modelPathDescription(customPath: nil, environment: [:],
                                             home: "/Users/someone")
             == "默认：~/.cache/whisper.cpp/ggml-medium-q5_0.bin")
-    #expect(HandyPaths.modelPathDescription(customPath: "/tmp/测试 目录/m.bin",
+    #expect(SottoPaths.modelPathDescription(customPath: "/tmp/测试 目录/m.bin",
                                             environment: [:], home: "/Users/someone")
             == "自定义：/tmp/测试 目录/m.bin")
 }

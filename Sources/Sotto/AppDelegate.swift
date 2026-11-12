@@ -23,7 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var isHotKeyDown = false
 
     /// 转写串行：连按两次时不要让两个 whisper 抢 Metal / 抢 server。
-    private let transcribeQueue = DispatchQueue(label: "top.rungundam.handy.transcribe",
+    private let transcribeQueue = DispatchQueue(label: "top.rungundam.sotto.transcribe",
                                                 qos: .userInitiated)
 
     // MARK: - 生命周期
@@ -188,7 +188,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             startRecorder()
         case .notDetermined:
             // 先数设备再申请权限：没有输入设备时系统会卡 20 秒才回 denied
-            // （handy-mic.swift 踩过这个坑），而且这里本来就不该弹权限框。
+            // （sotto-mic.swift 踩过这个坑），而且这里本来就不该弹权限框。
             guard MicrophoneRecorder.inputDeviceCount() > 0 else {
                 logger.write(event: "error", fields: [("stage", "mic"), ("code", "no_device")])
                 hud.show("没有检测到麦克风，插一个再试", isError: true)
@@ -248,8 +248,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func showMicDenied() {
         logger.write(event: "error", fields: [("stage", "mic"), ("code", "denied")])
         let alert = NSAlert()
-        alert.messageText = "Handy 没有麦克风权限"
-        alert.informativeText = "打开「系统设置 → 隐私与安全性 → 麦克风」，勾选 Handy 后再按一次热键。"
+        alert.messageText = "Sotto 没有麦克风权限"
+        alert.informativeText = "打开「系统设置 → 隐私与安全性 → 麦克风」，勾选 Sotto 后再按一次热键。"
         alert.addButton(withTitle: "打开系统设置")
         alert.addButton(withTitle: "取消")
         if #available(macOS 14.0, *) {
@@ -309,7 +309,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         ("code", "exit\(failure.status)"),
                     ])
                 }
-                FileHandle.standardError.write(Data(("handy: " + failure.bubbleMessage + "\n").utf8))
+                FileHandle.standardError.write(Data(("sotto: " + failure.bubbleMessage + "\n").utf8))
                 DispatchQueue.main.async {
                     self.hud.show(failure.bubbleMessage, isError: true)
                 }

@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="docs/assets/readme-hero.png" alt="Handy — 按住说话，松手出字" width="100%">
+  <img src="docs/assets/readme-hero.png" alt="Sotto — 按住说话，松手出字" width="100%">
 </p>
 
-<h1 align="center">Handy</h1>
+<h1 align="center">Sotto</h1>
 
 <p align="center">
 按住 <kbd>⌃</kbd><kbd>⌥</kbd><kbd>H</kbd> 说话，松手，文字进剪贴板。<br>
@@ -22,7 +22,7 @@
 
 中文输入法打长句慢，云端语音输入要把录音传出去，输入法级方案要装输入法、还要全盘键盘权限。
 
-Handy 只保留一个动作：**按住说话**。没有悬浮球、没有常驻窗口、不监听键盘事件、不模拟按键。
+Sotto 只保留一个动作：**按住说话**。没有悬浮球、没有常驻窗口、不监听键盘事件、不模拟按键。
 
 - 说 10 秒的话，比打 40 个字快
 - 音频不出本机——会议内容、客户名字、代码片段都不上传
@@ -35,13 +35,13 @@ Handy 只保留一个动作：**按住说话**。没有悬浮球、没有常驻�
 ```bash
 brew install whisper-cpp                 # 提供 whisper-server / whisper-cli
 
-git clone https://github.com/luogao/handy.git
-cd handy
+git clone https://github.com/luogao/sotto.git
+cd sotto
 
 ./scripts/fetch-model.sh                 # 下载 ggml-medium-q5_0（约 514MB）
-./scripts/bundle.sh                      # 产出 build/Handy.app
+./scripts/bundle.sh                      # 产出 build/Sotto.app
 
-cp -R build/Handy.app /Applications/ && open /Applications/Handy.app
+cp -R build/Sotto.app /Applications/ && open /Applications/Sotto.app
 ```
 
 第一次按 <kbd>⌃</kbd><kbd>⌥</kbd><kbd>H</kbd> 会弹麦克风授权，点允许即可。
@@ -82,7 +82,7 @@ cp -R build/Handy.app /Applications/ && open /Applications/Handy.app
 | 21.9 秒 | 1.53 秒（3 次中位） |
 
 热态 = `whisper-server` 已在跑、模型常驻内存。冷态首句会多一次模型加载（约 0.75 秒）。
-`./handy-transcribe --log-stats` 能看到每次 spawn / ready / request 的明细。
+`./sotto-transcribe --log-stats` 能看到每次 spawn / ready / request 的明细。
 
 设计上 **≤ 28 秒整段一次请求**：whisper 的硬窗口是 30 秒，31 秒单请求会丢后半段；
 切段每多一次请求就多付一次编码开销，所以能不切就不切。
@@ -93,15 +93,15 @@ cp -R build/Handy.app /Applications/ && open /Applications/Handy.app
 flowchart LR
     HK["⌃⌥H 按下<br/>Carbon 热键"] --> REC["MicrophoneRecorder<br/>16kHz 单声道 WAV"]
     REC -->|松开| TR["Transcriber<br/>模型预检"]
-    TR -->|"--model"| CLI["handy-transcribe"]
+    TR -->|"--model"| CLI["sotto-transcribe"]
     CLI --> SRV["whisper-server<br/>常驻，模型只加载一次"]
     SRV --> TXT["文本"]
     TXT --> CLIP["剪贴板"]
     TXT --> HUD["右上角气泡"]
 ```
 
-- **`Handy.app`**：菜单栏 app，管热键、录音、气泡、设置
-- **`handy-transcribe`**：转写引擎，默认复用常驻 server；`--no-server` 走一次性 `whisper-cli`
+- **`Sotto.app`**：菜单栏 app，管热键、录音、气泡、设置
+- **`sotto-transcribe`**：转写引擎，默认复用常驻 server；`--no-server` 走一次性 `whisper-cli`
 - **模型预检**：起进程之前先查文件，缺失与损坏分别有独立文案和日志码
   （`model_missing` / `model_unreadable`），4KB 垃圾文件不会被送进 whisper
 
@@ -113,14 +113,14 @@ flowchart LR
 这些是 app 的基础件，也能单独用：
 
 ```bash
-./handy-transcribe 录音.wav                      # 转写，打印到 stdout
-./handy-transcribe 录音.wav --clip               # 再写剪贴板 + 弹气泡
-./handy-transcribe --server-status               # server 是否在跑
-./handy-transcribe --log-stats --since 24h       # 冷启动 / 就绪统计
-./handy-mic --record 3                           # 录 3 秒到 WAV
-./handy-clip "文本"                              # 写剪贴板（先备份原内容）
-./handy-clip --restore                           # 还原剪贴板
-./handy-hint --trigger                           # 只弹气泡，不碰剪贴板
+./sotto-transcribe 录音.wav                      # 转写，打印到 stdout
+./sotto-transcribe 录音.wav --clip               # 再写剪贴板 + 弹气泡
+./sotto-transcribe --server-status               # server 是否在跑
+./sotto-transcribe --log-stats --since 24h       # 冷启动 / 就绪统计
+./sotto-mic --record 3                           # 录 3 秒到 WAV
+./sotto-clip "文本"                              # 写剪贴板（先备份原内容）
+./sotto-clip --restore                           # 还原剪贴板
+./sotto-hint --trigger                           # 只弹气泡，不碰剪贴板
 ```
 
 ## 开发
@@ -128,7 +128,7 @@ flowchart LR
 ```bash
 swift build
 swift test           # 56 条：模型预检、失败文案、热键组合、日志解析等纯逻辑
-./scripts/bundle.sh  # 打包，会把 handy-transcribe 一起编译进 Resources/bin
+./scripts/bundle.sh  # 打包，会把 sotto-transcribe 一起编译进 Resources/bin
 ```
 
 改失败路径或验收文案时用这两个脚本：

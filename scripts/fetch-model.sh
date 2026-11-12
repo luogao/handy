@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# 下载 Handy 默认用的 whisper 模型（ggml-medium-q5_0，约 514MB）。
+# 下载 Sotto 默认用的 whisper 模型（ggml-medium-q5_0，约 514MB）。
 #
-# 放的位置就是 handy-transcribe 和 app 预检共用的默认路径，
+# 放的位置就是 sotto-transcribe 和 app 预检共用的默认路径，
 # 下完直接能用；想换模型在「设置 › 模型」里选。
 #
 # 用法：./scripts/fetch-model.sh [目标路径]

@@ -66,7 +66,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     /// 「生效路径」实时反映设置：未设置显示默认 + 来源，已设置显示自定义 + 来源。
     private func refreshModelRow() {
-        let description = HandyPaths.modelPathDescription(customPath: settings.modelPath)
+        let description = SottoPaths.modelPathDescription(customPath: settings.modelPath)
         modelPathLabel.stringValue = description
         modelPathLabel.toolTip = description
         // 已经是默认态时「恢复默认」没有意义，灰掉避免误点。
@@ -108,7 +108,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         stack.addArrangedSubview(logTitle)
         stack.addArrangedSubview(loggingBox)
 
-        let logPath = NSTextField(labelWithString: "位置：~/Library/Caches/handy/handy.log")
+        let logPath = NSTextField(labelWithString: "位置：~/Library/Caches/sotto/sotto.log")
         logPath.font = .systemFont(ofSize: 11)
         logPath.textColor = .secondaryLabelColor
         stack.addArrangedSubview(logPath)
@@ -142,7 +142,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 340),
                               styleMask: [.titled, .closable],
                               backing: .buffered, defer: false)
-        window.title = "Handy 设置"
+        window.title = "Sotto 设置"
         window.isReleasedWhenClosed = false
         window.delegate = self
         // 菜单栏 app 没有 Dock 图标可点，窗口开在别的 app 后面等于「点了没反应」。

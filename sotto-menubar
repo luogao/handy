@@ -1,16 +1,16 @@
 #!/usr/bin/env swift
-// handy-menubar — 常驻菜单栏进程，负责「写入剪贴板后的可见提示」。
+// sotto-menubar — 常驻菜单栏进程，负责「写入剪贴板后的可见提示」。
 //
-// 只做第 2 段：收到 handy-clip / handy-hint 的触发后，在屏幕右上角显示一个
+// 只做第 2 段：收到 sotto-clip / sotto-hint 的触发后，在屏幕右上角显示一个
 // 不抢焦点、不拦截点击的浮层，持续 2 秒；重复触发只复用同一个浮层并重置计时。
-// 提示音默认开，可用 `handy-hint --sound off` 关掉（设置落盘，重启仍生效）。
+// 提示音默认开，可用 `sotto-hint --sound off` 关掉（设置落盘，重启仍生效）。
 //
 // 不用 UNUserNotificationCenter：CLI 进程没有 app bundle / bundle id，注册通知中心
 // 需要打包与签名，POC 阶段直接用 NSStatusItem + NSPanel，零权限、可控时长。
 import AppKit
 import Foundation
 
-let hintName = Notification.Name("com.gaogao.handy.hint")
+let hintName = Notification.Name("com.gaogao.sotto.hint")
 let hintTitle = "已复制到剪贴板"
 let visibleSeconds: TimeInterval = 2.0
 
@@ -23,10 +23,10 @@ func envDir(_ key: String, default path: String) -> String {
     return path
 }
 
-let settingsDir = envDir("HANDY_SETTINGS_DIR",
-                         default: NSHomeDirectory() + "/Library/Application Support/Handy")
+let settingsDir = envDir("SOTTO_SETTINGS_DIR",
+                         default: NSHomeDirectory() + "/Library/Application Support/Sotto")
 let settingsURL = URL(fileURLWithPath: settingsDir).appendingPathComponent("settings.plist")
-let logDir = envDir("HANDY_LOG_DIR", default: NSHomeDirectory() + "/Library/Caches/handy")
+let logDir = envDir("SOTTO_LOG_DIR", default: NSHomeDirectory() + "/Library/Caches/sotto")
 let logURL = URL(fileURLWithPath: logDir).appendingPathComponent("hint.log")
 
 try? fm.createDirectory(atPath: settingsDir, withIntermediateDirectories: true,
@@ -168,8 +168,8 @@ func showHint(text: String, writeMs: Double) {
 // 菜单栏图标：常驻，让用户知道进程在。
 let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 statusItem.button?.image = NSImage(systemSymbolName: "mic.fill",
-                                   accessibilityDescription: "Handy")
-statusItem.button?.toolTip = "Handy：写入剪贴板后提示"
+                                   accessibilityDescription: "Sotto")
+statusItem.button?.toolTip = "Sotto：写入剪贴板后提示"
 
 DistributedNotificationCenter.default().addObserver(
     forName: hintName, object: nil, queue: .main

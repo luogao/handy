@@ -1,12 +1,12 @@
 import Foundation
 import Testing
-@testable import Handy
+@testable import Sotto
 
 // MARK: - 预检三态
 
 private func makeTempDirectory() throws -> URL {
     let directory = FileManager.default.temporaryDirectory
-        .appendingPathComponent("handy-model-\(UUID().uuidString)")
+        .appendingPathComponent("sotto-model-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     return directory
 }

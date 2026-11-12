@@ -57,13 +57,13 @@ struct AppSettings {
     /// 默认值就成了摆设，两边各有一份「默认模型」也就再也对不上。未设置就是
     /// 未设置，传不传 `--model` 由调用方按 nil 判断。
     var modelPath: String? {
-        HandyPaths.normalizeModelPath(defaults.string(forKey: Key.modelPath))
+        SottoPaths.normalizeModelPath(defaults.string(forKey: Key.modelPath))
     }
 
     /// 传 nil / 空串 / 全空白都表示「恢复默认」：直接删键，不留一个空字符串，
     /// 这样 `defaults read` 看到的就是真正的未设置状态。
     func setModelPath(_ path: String?) {
-        guard let normalized = HandyPaths.normalizeModelPath(path) else {
+        guard let normalized = SottoPaths.normalizeModelPath(path) else {
             defaults.removeObject(forKey: Key.modelPath)
             return
         }

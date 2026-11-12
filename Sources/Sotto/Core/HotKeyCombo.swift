@@ -13,7 +13,7 @@ struct HotKeyCombo: Equatable, Sendable {
     var shift: Bool
     var command: Bool
 
-    /// 默认 ⌃⌥H。和 handy-mic.swift 的 hotkeyCombo 一致：P1 是「把已验证的
+    /// 默认 ⌃⌥H。和 sotto-mic.swift 的 hotkeyCombo 一致：P1 是「把已验证的
     /// 链路搬进 app」，默认值不自己另挑一个。
     static let `default` = HotKeyCombo(keyCode: KeyCode.h,
                                        control: true, option: true,

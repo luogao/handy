@@ -1,35 +1,35 @@
 #!/usr/bin/env swift
-// handy-clip — 把文本写进剪贴板，并保留覆盖前的全部剪贴板内容。
+// sotto-clip — 把文本写进剪贴板，并保留覆盖前的全部剪贴板内容。
 //
-//   ./handy-clip "文本"        # 写入 NSPasteboardTypeString；首次写入前备份原内容
-//   ./handy-clip --restore     # 恢复写入前的剪贴板（全部类型），然后清空备份
-//   ./handy-clip --status      # 看有没有备份、备份里有哪些类型
-//   ./handy-clip --snapshot    # 只备份当前剪贴板，不改内容（测试/保护现场用）
-//   ./handy-clip --help
+//   ./sotto-clip "文本"        # 写入 NSPasteboardTypeString；首次写入前备份原内容
+//   ./sotto-clip --restore     # 恢复写入前的剪贴板（全部类型），然后清空备份
+//   ./sotto-clip --status      # 看有没有备份、备份里有哪些类型
+//   ./sotto-clip --snapshot    # 只备份当前剪贴板，不改内容（测试/保护现场用）
+//   ./sotto-clip --help
 //
 // 只用 AppKit 的 NSPasteboard：不请求 TCC、不碰 AX / CGEvent。
-// 状态目录默认 ~/Library/Caches/handy，可用 HANDY_CLIP_STATE_DIR 覆盖。
+// 状态目录默认 ~/Library/Caches/sotto，可用 SOTTO_CLIP_STATE_DIR 覆盖。
 import AppKit
 import Foundation
 
 let usage = """
-usage: handy-clip <text...>      写入剪贴板（非选项参数按空格拼接）
-       handy-clip --restore      恢复写入前的剪贴板
-       handy-clip --status       查看备份状态
-       handy-clip --snapshot     只备份当前剪贴板
-       handy-clip --help
+usage: sotto-clip <text...>      写入剪贴板（非选项参数按空格拼接）
+       sotto-clip --restore      恢复写入前的剪贴板
+       sotto-clip --status       查看备份状态
+       sotto-clip --snapshot     只备份当前剪贴板
+       sotto-clip --help
 """
 
 func die(_ message: String, code: Int32 = 1) -> Never {
-    FileHandle.standardError.write(("handy-clip: " + message + "\n").data(using: .utf8)!)
+    FileHandle.standardError.write(("sotto-clip: " + message + "\n").data(using: .utf8)!)
     exit(code)
 }
 
 let stateDir: String = {
-    if let d = ProcessInfo.processInfo.environment["HANDY_CLIP_STATE_DIR"], !d.isEmpty {
+    if let d = ProcessInfo.processInfo.environment["SOTTO_CLIP_STATE_DIR"], !d.isEmpty {
         return (d as NSString).expandingTildeInPath
     }
-    return NSHomeDirectory() + "/Library/Caches/handy"
+    return NSHomeDirectory() + "/Library/Caches/sotto"
 }()
 let backupURL = URL(fileURLWithPath: stateDir).appendingPathComponent("clipboard-backup.plist")
 let fm = FileManager.default
@@ -136,7 +136,7 @@ default:
         let items = snapshot()
         saveBackup(items)
         FileHandle.standardError.write(
-            ("handy-clip: 已备份原剪贴板（\(items.count) 项）；--restore 可恢复。\n")
+            ("sotto-clip: 已备份原剪贴板（\(items.count) 项）；--restore 可恢复。\n")
                 .data(using: .utf8)!)
     }
 
@@ -147,9 +147,9 @@ default:
 
     // 第 2 段：通知常驻的菜单栏进程显示提示；进程没在跑也不影响写入。
     // 用 DistributedNotificationCenter 而不是直接起窗口，避免每次调用都新开一个浮层。
-    if ProcessInfo.processInfo.environment["HANDY_NO_HINT"] == nil {
+    if ProcessInfo.processInfo.environment["SOTTO_NO_HINT"] == nil {
         DistributedNotificationCenter.default().postNotificationName(
-            Notification.Name("com.gaogao.handy.hint"), object: nil,
+            Notification.Name("com.gaogao.sotto.hint"), object: nil,
             userInfo: ["write_ts": writeMs, "text": "已复制到剪贴板"],
             deliverImmediately: true)
         // 给 distnoted 一点时间投递，再让这个短命进程退出。

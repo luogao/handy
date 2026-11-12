@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import Handy
+@testable import Sotto
 
 // MARK: - 模型失败文案（卡里逐字，不许改写）
 
@@ -43,12 +43,12 @@ import Testing
     #expect(whisperMissing.bubbleMessage == whisperMissing.userMessage)
 
     let binaryMissing = TranscribeFailure(status: -1, stderr: "", detail: "missing")
-    #expect(binaryMissing.userMessage.contains("HANDY_TRANSCRIBE"))
+    #expect(binaryMissing.userMessage.contains("SOTTO_TRANSCRIBE"))
     #expect(binaryMissing.userDetail == nil)
 }
 
 @Test func 转写失败摘要仍取stderr最后一行() {
-    let failure = TranscribeFailure(status: 1, stderr: "handy-transcribe: 转写结果为空\n",
+    let failure = TranscribeFailure(status: 1, stderr: "sotto-transcribe: 转写结果为空\n",
                                     detail: nil)
     #expect(failure.userMessage == "转写失败：转写结果为空")
     #expect(failure.userDetail == nil)

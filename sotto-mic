@@ -1,0 +1,17 @@
+#!/bin/sh
+# sotto-mic 的入口：首次调用把 sotto-mic.swift 编译到 .build/，之后直接 exec。
+# 不用 `swift sotto-mic.swift` 解释执行——每次现编译约 1s，会把「无设备 ≤1s 退出」拖过线。
+set -eu
+dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+src="$dir/sotto-mic.swift"
+bin="$dir/.build/sotto-mic"
+if [ ! -x "$bin" ] || [ "$src" -nt "$bin" ]; then
+    mkdir -p "$dir/.build"
+    tmp="$bin.tmp.$$"
+    swiftc -O "$src" -o "$tmp"
+    mv "$tmp" "$bin"
+fi
+# 录音结束后要调同目录的 sotto-transcribe；二进制在 .build/ 里，得把目录传进去。
+SOTTO_DIR="$dir"
+export SOTTO_DIR
+exec "$bin" "$@"

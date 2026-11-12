@@ -1,0 +1,16 @@
+#!/bin/sh
+# sotto-transcribe 的入口：首次调用把 sotto-transcribe.swift 编译到 .build/，之后直接 exec。
+# 不用 `swift sotto-transcribe.swift` 解释执行——每次现编译约 1s，会把「10 秒音频 ≤3s」拖过线。
+set -eu
+dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+src="$dir/sotto-transcribe.swift"
+bin="$dir/.build/sotto-transcribe"
+if [ ! -x "$bin" ] || [ "$src" -nt "$bin" ]; then
+    mkdir -p "$dir/.build"
+    tmp="$bin.tmp.$$"
+    swiftc -O "$src" -o "$tmp"
+    mv "$tmp" "$bin"
+fi
+SOTTO_DIR="$dir"
+export SOTTO_DIR
+exec "$bin" "$@"

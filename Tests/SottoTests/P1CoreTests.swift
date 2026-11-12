@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import Handy
+@testable import Sotto
 
 // MARK: - 热键组合
 
@@ -52,7 +52,7 @@ import Testing
 // MARK: - 设置
 
 @Test func 设置默认值() {
-    let name = "HandyTests.\(UUID().uuidString)"
+    let name = "SottoTests.\(UUID().uuidString)"
     let defaults = UserDefaults(suiteName: name)!
     defer { defaults.removePersistentDomain(forName: name) }
     let settings = AppSettings(defaults: defaults)
@@ -61,7 +61,7 @@ import Testing
 }
 
 @Test func 热键与日志开关会持久化() {
-    let name = "HandyTests.\(UUID().uuidString)"
+    let name = "SottoTests.\(UUID().uuidString)"
     let defaults = UserDefaults(suiteName: name)!
     defer { defaults.removePersistentDomain(forName: name) }
     let combo = HotKeyCombo(keyCode: KeyCode.j, control: true, option: false,
@@ -94,7 +94,7 @@ import Testing
 
 @Test func 日志关闭时不写文件() throws {
     let directory = FileManager.default.temporaryDirectory
-        .appendingPathComponent("handy-log-\(UUID().uuidString)")
+        .appendingPathComponent("sotto-log-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: directory) }
     let logger = EventLogger(directory: directory, isEnabled: { false })
     logger.write(event: "record_start", fields: [("max_s", "60")])
@@ -103,7 +103,7 @@ import Testing
 
 @Test func 日志打开时追加一行() throws {
     let directory = FileManager.default.temporaryDirectory
-        .appendingPathComponent("handy-log-\(UUID().uuidString)")
+        .appendingPathComponent("sotto-log-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: directory) }
     let logger = EventLogger(directory: directory, isEnabled: { true })
     logger.write(event: "record_stop", fields: [("audio_ms", "1200")])
@@ -115,34 +115,34 @@ import Testing
 // MARK: - 转写器定位
 
 @Test func 环境变量覆盖转写器路径() {
-    let target = "/opt/fake/handy-transcribe"
+    let target = "/opt/fake/sotto-transcribe"
     let location = TranscriberResolver.resolve(
-        environment: ["HANDY_TRANSCRIBE": target],
+        environment: ["SOTTO_TRANSCRIBE": target],
         bundleResourceURL: nil,
-        executableURL: URL(fileURLWithPath: "/repo/handy/.build/debug/Handy"),
+        executableURL: URL(fileURLWithPath: "/repo/sotto/.build/debug/Sotto"),
         isExecutable: { $0 == target }
     )
     #expect(location.url?.path == target)
-    #expect(location.source == "HANDY_TRANSCRIBE")
+    #expect(location.source == "SOTTO_TRANSCRIBE")
 }
 
 @Test func 环境变量指错时不静默回退() {
     let location = TranscriberResolver.resolve(
-        environment: ["HANDY_TRANSCRIBE": "/opt/missing"],
+        environment: ["SOTTO_TRANSCRIBE": "/opt/missing"],
         bundleResourceURL: nil,
-        executableURL: URL(fileURLWithPath: "/repo/handy/.build/debug/Handy"),
-        isExecutable: { $0 == "/repo/handy/handy-transcribe" }   // 开发目录其实存在
+        executableURL: URL(fileURLWithPath: "/repo/sotto/.build/debug/Sotto"),
+        isExecutable: { $0 == "/repo/sotto/sotto-transcribe" }   // 开发目录其实存在
     )
     #expect(location.url == nil)
-    #expect(location.source == "HANDY_TRANSCRIBE")
+    #expect(location.source == "SOTTO_TRANSCRIBE")
 }
 
 @Test func 打包后优先用bundle内的二进制() {
-    let bundled = "/Applications/Handy.app/Contents/Resources/bin/handy-transcribe"
+    let bundled = "/Applications/Sotto.app/Contents/Resources/bin/sotto-transcribe"
     let location = TranscriberResolver.resolve(
         environment: [:],
-        bundleResourceURL: URL(fileURLWithPath: "/Applications/Handy.app/Contents/Resources"),
-        executableURL: URL(fileURLWithPath: "/Applications/Handy.app/Contents/MacOS/Handy"),
+        bundleResourceURL: URL(fileURLWithPath: "/Applications/Sotto.app/Contents/Resources"),
+        executableURL: URL(fileURLWithPath: "/Applications/Sotto.app/Contents/MacOS/Sotto"),
         isExecutable: { $0 == bundled }
     )
     #expect(location.url?.path == bundled)
@@ -150,11 +150,11 @@ import Testing
 }
 
 @Test func 开发态从可执行文件向上找到仓库里的转写器() {
-    let expected = "/repo/handy/handy-transcribe"
+    let expected = "/repo/sotto/sotto-transcribe"
     let location = TranscriberResolver.resolve(
         environment: [:],
         bundleResourceURL: nil,
-        executableURL: URL(fileURLWithPath: "/repo/handy/.build/debug/Handy"),
+        executableURL: URL(fileURLWithPath: "/repo/sotto/.build/debug/Sotto"),
         isExecutable: { $0 == expected }
     )
     #expect(location.url?.path == expected)
@@ -165,7 +165,7 @@ import Testing
     let location = TranscriberResolver.resolve(
         environment: [:],
         bundleResourceURL: nil,
-        executableURL: URL(fileURLWithPath: "/nowhere/Handy"),
+        executableURL: URL(fileURLWithPath: "/nowhere/Sotto"),
         isExecutable: { _ in false }
     )
     #expect(location.url == nil)
@@ -197,8 +197,8 @@ import Testing
     #expect(TranscribeFailure(status: 3, stderr: "", detail: nil)
         .userMessage.contains("whisper-cpp"))
     #expect(TranscribeFailure(status: -1, stderr: "", detail: nil)
-        .userMessage.contains("HANDY_TRANSCRIBE"))
-    let empty = TranscribeFailure(status: 1, stderr: "handy-transcribe: 转写结果为空\n",
+        .userMessage.contains("SOTTO_TRANSCRIBE"))
+    let empty = TranscribeFailure(status: 1, stderr: "sotto-transcribe: 转写结果为空\n",
                                   detail: nil)
     #expect(empty.userMessage == "转写失败：转写结果为空")
 }
@@ -206,15 +206,15 @@ import Testing
 // MARK: - 目录与文案
 
 @Test func 日志与录音目录可被环境变量覆盖() {
-    let environment = ["HANDY_LOG_DIR": "/tmp/handy-log-test",
-                       "HANDY_RECORD_DIR": "/tmp/handy-rec-test"]
-    #expect(HandyPaths.logDirectory(environment: environment).path == "/tmp/handy-log-test")
-    #expect(HandyPaths.recordingsDirectory(environment: environment).path == "/tmp/handy-rec-test")
+    let environment = ["SOTTO_LOG_DIR": "/tmp/sotto-log-test",
+                       "SOTTO_RECORD_DIR": "/tmp/sotto-rec-test"]
+    #expect(SottoPaths.logDirectory(environment: environment).path == "/tmp/sotto-log-test")
+    #expect(SottoPaths.recordingsDirectory(environment: environment).path == "/tmp/sotto-rec-test")
 }
 
 @Test func 默认日志目录在Caches下() {
-    let path = HandyPaths.logDirectory(environment: [:], home: "/Users/someone").path
-    #expect(path == "/Users/someone/Library/Caches/handy")
+    let path = SottoPaths.logDirectory(environment: [:], home: "/Users/someone").path
+    #expect(path == "/Users/someone/Library/Caches/sotto")
 }
 
 @Test func 气泡文案是卡里写死的那一句() {

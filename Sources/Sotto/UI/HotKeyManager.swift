@@ -12,7 +12,7 @@ final class HotKeyManager {
 
     private var hotKeyRef: EventHotKeyRef?
     private var handlerRef: EventHandlerRef?
-    private let signature: OSType = 0x484E4459   // 'HNDY'，与 handy-mic 同值
+    private let signature: OSType = 0x484E4459   // 'HNDY'，与 sotto-mic 同值
     private let hotKeyID: UInt32 = 1
 
     /// 事件处理器只装一次；换组合只换注册，避免重复 InstallEventHandler 叠回调。
@@ -25,7 +25,7 @@ final class HotKeyManager {
             EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
                           eventKind: UInt32(kEventHotKeyReleased)),
         ]
-        return InstallEventHandler(GetApplicationEventTarget(), handyHotKeyHandler,
+        return InstallEventHandler(GetApplicationEventTarget(), sottoHotKeyHandler,
                                    types.count, &types,
                                    Unmanaged.passUnretained(self).toOpaque(),
                                    &handlerRef)
@@ -86,7 +86,7 @@ final class HotKeyManager {
     }
 }
 
-private func handyHotKeyHandler(_ callRef: EventHandlerCallRef?,
+private func sottoHotKeyHandler(_ callRef: EventHandlerCallRef?,
                                 _ event: EventRef?,
                                 _ userData: UnsafeMutableRawPointer?) -> OSStatus {
     guard let userData else { return OSStatus(eventNotHandledErr) }

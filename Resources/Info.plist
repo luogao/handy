@@ -5,17 +5,17 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>zh_CN</string>
 	<key>CFBundleDisplayName</key>
-	<string>Handy</string>
+	<string>Sotto</string>
 	<key>CFBundleExecutable</key>
-	<string>Handy</string>
+	<string>Sotto</string>
 	<key>CFBundleIconFile</key>
 	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
-	<string>top.rungundam.handy</string>
+	<string>top.rungundam.sotto</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>Handy</string>
+	<string>Sotto</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -29,10 +29,10 @@
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSHumanReadableCopyright</key>
-	<string>MIT License · handy</string>
+	<string>MIT License · sotto</string>
 	<!-- 文案先写好：P1 的 TCC 授权弹窗直接用它。
 	     P0 不调用 requestAccess，也不会因此申请权限。 -->
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Handy 需要麦克风权限，把你说的话转成文字。音频只在本机处理，不会上传。</string>
+	<string>Sotto 需要麦克风权限，把你说的话转成文字。音频只在本机处理，不会上传。</string>
 </dict>
 </plist>

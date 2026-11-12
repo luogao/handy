@@ -1,6 +1,6 @@
 import Foundation
 
-/// `Handy --transcribe-file <wav> [--json]`
+/// `Sotto --transcribe-file <wav> [--json]`
 ///
 /// 时延验收的调试入口：走的是 app 内同一条 TranscribeService（不是另写一套
 /// shell 调用），所以量到的就是「app 里点完松手之后要等多久」。
@@ -55,7 +55,7 @@ enum TranscribeFileCommand {
 
     private static func emitFailure(status: Int32, message: String, wav: String, asJSON: Bool,
                                     detail: String? = nil) -> Never {
-        FileHandle.standardError.write(Data("handy: \(message)\n".utf8))
+        FileHandle.standardError.write(Data("sotto: \(message)\n".utf8))
         if asJSON {
             var object: [String: Any] = ["file": wav, "exit": Int(status), "error": message]
             if let detail { object["detail"] = detail }

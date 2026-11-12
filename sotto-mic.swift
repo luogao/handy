@@ -1,14 +1,14 @@
 #!/usr/bin/env swift
-// handy-mic — 第 3 段：麦克风录音。
+// sotto-mic — 第 3 段：麦克风录音。
 //
-//   ./handy-mic --list          列出音频输入设备；无设备时输出 devices(0)、exit 0
-//   ./handy-mic --record 3      录 3 秒到 ~/Library/Caches/handy/recordings/*.wav
-//   ./handy-mic --hotkey        常驻：按住 ⌃⌥H 录、松开落盘（RegisterEventHotKey，不用 CGEventTap）
-//   ./handy-mic --check         只注册热键并报告状态，1 秒内退出（本机没有麦克风也能验）
-//   ./handy-mic --file <wav>    拿现成 WAV 走「录音结束 → 转写 → 剪贴板 → 提示」这条链路
-//   ./handy-mic --help
+//   ./sotto-mic --list          列出音频输入设备；无设备时输出 devices(0)、exit 0
+//   ./sotto-mic --record 3      录 3 秒到 ~/Library/Caches/sotto/recordings/*.wav
+//   ./sotto-mic --hotkey        常驻：按住 ⌃⌥H 录、松开落盘（RegisterEventHotKey，不用 CGEventTap）
+//   ./sotto-mic --check         只注册热键并报告状态，1 秒内退出（本机没有麦克风也能验）
+//   ./sotto-mic --file <wav>    拿现成 WAV 走「录音结束 → 转写 → 剪贴板 → 提示」这条链路
+//   ./sotto-mic --help
 //
-// 转写这一段不在本文件里：松手后调 handy-transcribe（同一目录），热键模式和 --file
+// 转写这一段不在本文件里：松手后调 sotto-transcribe（同一目录），热键模式和 --file
 // 走的是同一个函数 finishRecording，没有第二份实现。--file 是无麦克风机器上的链路验证入口。
 // 无设备时 --record / --hotkey 立刻 exit 3，**不会**卡在 requestAccess 的 20 秒等待上：
 // 先用 AVCaptureDevice.DiscoverySession 数设备，0 个就直接报错，根本不调用 requestAccess。
@@ -29,19 +29,19 @@ let minRecordSeconds: TimeInterval = 0.2   // 松手太快：丢弃并提示，�
 let maxRecordSeconds: TimeInterval = 60    // 热键松开事件丢了也不会无限录
 
 let usage = """
-usage: handy-mic --list            列出音频输入设备
-       handy-mic --record <秒>     录固定时长到 WAV
-       handy-mic --hotkey          常驻：按住 \(hotkeyCombo) 录，松开转写并写剪贴板
-       handy-mic --check           注册热键并报告状态后退出
-       handy-mic --file <wav>      拿现成 WAV 走同一条链路，输出 elapsed_ms
-       handy-mic --help
+usage: sotto-mic --list            列出音频输入设备
+       sotto-mic --record <秒>     录固定时长到 WAV
+       sotto-mic --hotkey          常驻：按住 \(hotkeyCombo) 录，松开转写并写剪贴板
+       sotto-mic --check           注册热键并报告状态后退出
+       sotto-mic --file <wav>      拿现成 WAV 走同一条链路，输出 elapsed_ms
+       sotto-mic --help
 """
 
 let fm = FileManager.default
 let env = ProcessInfo.processInfo.environment
 
 func die(_ message: String, _ code: Int32 = 1) -> Never {
-    FileHandle.standardError.write(("handy-mic: " + message + "\n").data(using: .utf8)!)
+    FileHandle.standardError.write(("sotto-mic: " + message + "\n").data(using: .utf8)!)
     exit(code)
 }
 
@@ -50,8 +50,8 @@ func envDir(_ key: String, default def: String) -> String {
     return def
 }
 
-let recordDir = envDir("HANDY_RECORD_DIR",
-                       default: NSHomeDirectory() + "/Library/Caches/handy/recordings")
+let recordDir = envDir("SOTTO_RECORD_DIR",
+                       default: NSHomeDirectory() + "/Library/Caches/sotto/recordings")
 
 let iso: ISO8601DateFormatter = {
     let f = ISO8601DateFormatter()
@@ -65,27 +65,27 @@ func log(_ message: String) {
 
 // MARK: - 录音结束后的链路（转写 → 剪贴板 → 提示）
 
-/// handy/ 目录：包装脚本会传 HANDY_DIR；没传就按二进制在 handy/.build/ 里回退。
-let handyDir: String = {
-    if let d = env["HANDY_DIR"], !d.isEmpty { return d }
+/// sotto/ 目录：包装脚本会传 SOTTO_DIR；没传就按二进制在 sotto/.build/ 里回退。
+let sottoDir: String = {
+    if let d = env["SOTTO_DIR"], !d.isEmpty { return d }
     let exe = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
     return exe.deletingLastPathComponent().deletingLastPathComponent().path
 }()
 
 /// 转写串行跑：连按两次时不要两个 whisper 抢 Metal。
-let chainQueue = DispatchQueue(label: "com.gaogao.handy.transcribe")
+let chainQueue = DispatchQueue(label: "com.gaogao.sotto.transcribe")
 
 /// 录音结束后唯一的那条链路。热键松手和 --file 都走这里，不许另写一份。
-/// 返回 handy-transcribe 的退出码，耗时由调用方量。
+/// 返回 sotto-transcribe 的退出码，耗时由调用方量。
 func runTranscribeChain(wav: URL) -> Int32 {
-    let exe = handyDir + "/handy-transcribe"
+    let exe = sottoDir + "/sotto-transcribe"
     guard fm.isExecutableFile(atPath: exe) else {
         log("transcribe_missing path=\(exe)")
         return 1
     }
     let process = Process()
     process.executableURL = URL(fileURLWithPath: exe)
-    // --clip：转写完写剪贴板并触发 handy-hint；stdout 是转写文本，转进 stderr 只当日志，
+    // --clip：转写完写剪贴板并触发 sotto-hint；stdout 是转写文本，转进 stderr 只当日志，
     // 免得混进 --file 的 elapsed_ms 输出。
     process.arguments = [wav.path, "--clip"]
     process.standardOutput = FileHandle.standardError
@@ -152,7 +152,7 @@ func makeOutputURL() -> URL {
     let f = DateFormatter()
     f.locale = Locale(identifier: "en_US_POSIX")
     f.dateFormat = "yyyyMMdd-HHmmss-SSS"
-    return dir.appendingPathComponent("handy-\(f.string(from: Date())).wav")
+    return dir.appendingPathComponent("sotto-\(f.string(from: Date())).wav")
 }
 
 func fileSize(_ url: URL) -> Int {

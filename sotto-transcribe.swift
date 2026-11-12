@@ -1,10 +1,10 @@
 #!/usr/bin/env swift
-// handy-transcribe — 第 4 段：WAV → 分段转写 → 词典校正 → （可选）剪贴板。
+// sotto-transcribe — 第 4 段：WAV → 分段转写 → 词典校正 → （可选）剪贴板。
 //
-//   ./handy-transcribe <wav> [--model <path>] [--terms "A|B|C"] [--clip] [--keep-hant]
+//   ./sotto-transcribe <wav> [--model <path>] [--terms "A|B|C"] [--clip] [--keep-hant]
 //                       [--no-server] [--server-status] [--stop-server]
 //
-// 最终文本打到 stdout；--clip 时再交给 handy-clip 写剪贴板并弹提示。
+// 最终文本打到 stdout；--clip 时再交给 sotto-clip 写剪贴板并弹提示。
 //
 // 两条转写路径，默认优先常驻 server：
 //   server：起一个 whisper-server（模型只加载一次），每段 POST /inference；
@@ -47,22 +47,22 @@ let segmentTargetSeconds: Double = 25
 let carryCharacters = 40
 
 let defaultModel = NSHomeDirectory() + "/.cache/whisper.cpp/ggml-medium-q5_0.bin"
-let defaultTermsFile = NSHomeDirectory() + "/Library/Application Support/Handy/terms.txt"
+let defaultTermsFile = NSHomeDirectory() + "/Library/Application Support/Sotto/terms.txt"
 
 let exitUsage: Int32 = 1
 let exitModel: Int32 = 2
 let exitWhisper: Int32 = 3
 
 let usage = """
-usage: handy-transcribe <wav> [--model <path>] [--terms "A|B|C"] [--clip]
+usage: sotto-transcribe <wav> [--model <path>] [--terms "A|B|C"] [--clip]
                             [--keep-hant] [--debug] [--no-server]
-       handy-transcribe --server-status | --stop-server
-       handy-transcribe --log-stats [--since 7d|24h|2026-11-03|<ISO8601>]
+       sotto-transcribe --server-status | --stop-server
+       sotto-transcribe --log-stats [--since 7d|24h|2026-11-03|<ISO8601>]
 
   <wav>            16kHz/单声道/16bit WAV（其他格式会转）
   --model <path>   whisper 模型路径，默认 \(defaultModel)
   --terms "A|B|C"  热词表，'|' 分隔；默认读 \(defaultTermsFile)
-  --clip           转写完写剪贴板并弹提示（交给 handy-clip）
+  --clip           转写完写剪贴板并弹提示（交给 sotto-clip）
   --keep-hant      保留 whisper 输出的繁体，默认转成简体
   --debug          whisper 的日志不再丢弃，打到 stderr
   --no-server      强制旧 whisper-cli 路径（每段重载模型，慢；对照与兜底用）
@@ -77,10 +77,10 @@ let debug = CommandLine.arguments.contains("--debug")
 
 // MARK: - 常驻 server 的文件与默认值
 
-/// 与 handy-clip / handy-hint 共用 `~/Library/Caches/handy`；HANDY_LOG_DIR 可覆盖（测试并行时用）。
+/// 与 sotto-clip / sotto-hint 共用 `~/Library/Caches/sotto`；SOTTO_LOG_DIR 可覆盖（测试并行时用）。
 let cacheDir: String = {
-    if let d = env["HANDY_LOG_DIR"], !d.isEmpty { return (d as NSString).expandingTildeInPath }
-    return NSHomeDirectory() + "/Library/Caches/handy"
+    if let d = env["SOTTO_LOG_DIR"], !d.isEmpty { return (d as NSString).expandingTildeInPath }
+    return NSHomeDirectory() + "/Library/Caches/sotto"
 }()
 let portFile = cacheDir + "/whisper-server.port"
 let metaFile = cacheDir + "/whisper-server.json"
@@ -92,14 +92,14 @@ let portScanCount = 20
 let serverVariant = "whisper-server/v1"
 /// 空闲自退。验收要把 600s 压到 20s，所以走环境变量而不是命令行开关。
 let serverIdleSeconds: Double = {
-    guard let raw = env["HANDY_SERVER_IDLE_SECONDS"], let value = Double(raw) else { return 600 }
+    guard let raw = env["SOTTO_SERVER_IDLE_SECONDS"], let value = Double(raw) else { return 600 }
     return min(max(value, 5), 86400)      // 小于 5s 会在一次推理中途被看门狗误杀
 }()
 
 // MARK: - 事件日志（whisper-server.log）
 //
 // 日志是「可统计的事件流」，不是一次性调试输出：
-//   <ISO8601 毫秒> <文件内字节偏移> handy event=<类型> k=v ...   由本程序写的事件行
+//   <ISO8601 毫秒> <文件内字节偏移> sotto event=<类型> k=v ...   由本程序写的事件行
 //   <ISO8601 毫秒> <文件内字节偏移> server <原始行>               server 子进程输出（经中继）
 // 追加写、不截断，单文件过 5MB 轮转成 `.1`，当前 + `.1` 共 2 份。
 // 不记识别文本、音频内容、wav 路径（隐私线；见 transcribeViaServer 的 multipart 文件名）。
@@ -118,7 +118,7 @@ let logStampFormatter: DateFormatter = {
 func logStamp(_ date: Date = Date()) -> String { logStampFormatter.string(from: date) }
 
 func logEvent(_ body: String, to path: String = serverLogFile) {
-    appendLogLine(path, "handy event=" + body)
+    appendLogLine(path, "sotto event=" + body)
 }
 
 /// 本进程只需要检查一次老格式。
@@ -195,18 +195,18 @@ func appendLogLine(_ path: String, _ body: String) {
 }
 
 func fail(_ message: String, _ code: Int32) -> Never {
-    FileHandle.standardError.write(("handy-transcribe: " + message + "\n").data(using: .utf8)!)
+    FileHandle.standardError.write(("sotto-transcribe: " + message + "\n").data(using: .utf8)!)
     exit(code)
 }
 
 func note(_ message: String) {
     guard debug else { return }
-    FileHandle.standardError.write(("handy-transcribe: " + message + "\n").data(using: .utf8)!)
+    FileHandle.standardError.write(("sotto-transcribe: " + message + "\n").data(using: .utf8)!)
 }
 
-/// 这个可执行文件所在的 handy/ 目录（包装脚本会传 HANDY_DIR，不传就按 .build/ 回退）。
-let handyDir: String = {
-    if let d = env["HANDY_DIR"], !d.isEmpty { return d }
+/// 这个可执行文件所在的 sotto/ 目录（包装脚本会传 SOTTO_DIR，不传就按 .build/ 回退）。
+let sottoDir: String = {
+    if let d = env["SOTTO_DIR"], !d.isEmpty { return d }
     let exe = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
     return exe.deletingLastPathComponent().deletingLastPathComponent().path
 }()
@@ -372,7 +372,7 @@ func loadSamples(url: URL) throws -> [Float] {
                               sampleRate: sampleRate, channels: 1,
                               interleaved: false)!
 
-    // 快路径：handy-mic 落盘的就是 16k/单声道，直接整块读。
+    // 快路径：sotto-mic 落盘的就是 16k/单声道，直接整块读。
     if inFormat.sampleRate == sampleRate && inFormat.channelCount == 1 {
         let capacity = AVAudioFrameCount(file.length)
         guard let buffer = AVAudioPCMBuffer(pcmFormat: inFormat, frameCapacity: capacity) else {
@@ -615,7 +615,7 @@ enum ServerError: Error, CustomStringConvertible {
 /// 只在回退时打一行（不带 --debug 也打）：这是运行状态，不是调试日志。
 func fallbackToCLI(_ reason: String) {
     FileHandle.standardError.write(
-        ("handy-transcribe: fallback=cli (" + reason + ")\n").data(using: .utf8)!)
+        ("sotto-transcribe: fallback=cli (" + reason + ")\n").data(using: .utf8)!)
 }
 
 func readMeta(at path: String) -> ServerMeta? {
@@ -775,7 +775,7 @@ func spawnDetached(_ arguments: [String], log: String?) throws -> pid_t {
         process.standardOutput = handle
         process.standardError = handle
         // 让 --internal-serve 知道该把子进程输出转发到哪里（中继要用）。
-        environment["HANDY_SERVER_LOG"] = log
+        environment["SOTTO_SERVER_LOG"] = log
     } else {
         process.standardOutput = FileHandle(forWritingAtPath: "/dev/null")
         process.standardError = FileHandle(forWritingAtPath: "/dev/null")
@@ -870,7 +870,7 @@ func residentMB(pid: pid_t) -> Int? {
 
 func transcribeViaServer(_ wav: URL, prompt: String?, port: Int) throws -> String {
     let audio = try Data(contentsOf: wav)
-    let boundary = "handy-" + UUID().uuidString
+    let boundary = "sotto-" + UUID().uuidString
     var body = Data()
     func add(_ text: String) { body.append(Data(text.utf8)) }
     func field(_ name: String, _ value: String) {
@@ -980,10 +980,10 @@ func median(_ values: [Int]) -> Double {
     return (Double(sorted[sorted.count / 2 - 1]) + Double(sorted[sorted.count / 2])) / 2
 }
 
-/// 一行 → (时间戳, `handy event=...` 之后的部分)。不是事件行（server 转发 / 坏行）返回 nil。
+/// 一行 → (时间戳, `sotto event=...` 之后的部分)。不是事件行（server 转发 / 坏行）返回 nil。
 func parseEvent(_ line: Substring) -> (date: Date, body: String)? {
     let fields = line.split(separator: " ", maxSplits: 3, omittingEmptySubsequences: true)
-    guard fields.count == 4, fields[2] == "handy",
+    guard fields.count == 4, fields[2] == "sotto",
           let date = logStampFormatter.date(from: String(fields[0])) else { return nil }
     return (date, String(fields[3]))
 }
@@ -1071,7 +1071,7 @@ func runInternalServe(_ arguments: [String]) -> Never {
     // 子进程的 stdout/stderr 也要有时间戳，否则整份日志就排不了序。
     // 做法：spawn 一个中继进程读管道，本进程照旧 exec 成 server——exec 不换 PID，
     // 所以 --server-status / 看门狗 / terminate 拿到的仍然是 server 自己的 pid。
-    if let logPath = env["HANDY_SERVER_LOG"], !logPath.isEmpty, pipeServerOutput(to: logPath) {
+    if let logPath = env["SOTTO_SERVER_LOG"], !logPath.isEmpty, pipeServerOutput(to: logPath) {
         // 中继没了（崩溃 / 被杀）也只丢日志：写管道返回 EPIPE，别把 server 一起带走。
         signal(SIGPIPE, SIG_IGN)
     }
@@ -1105,7 +1105,7 @@ func pipeServerOutput(to logPath: String) -> Bool {
     posix_spawn_file_actions_addclose(&actions, fds[1])
     defer { posix_spawn_file_actions_destroy(&actions) }
 
-    // 参数里只有 fd 号，日志路径走 HANDY_SERVER_LOG：argv 不出现 "whisper-server" 字样，
+    // 参数里只有 fd 号，日志路径走 SOTTO_SERVER_LOG：argv 不出现 "whisper-server" 字样，
     // 免得 `pgrep -fl whisper-server` 数进程时把中继算进去。
     // 注意不能用顶层 let selfPath：--internal-serve 在顶层语句流里先于它初始化，
     // 取到的是零值（第一次实现就崩在这儿）。argv[0] 就是父进程 spawn 时给的可执行路径。
@@ -1134,7 +1134,7 @@ func pipeServerOutput(to logPath: String) -> Bool {
 /// 日志路径走环境变量（不放进 argv），理由见 pipeServerOutput。
 func runInternalRelay(_ arguments: [String]) -> Never {
     guard arguments.count == 1, let fd = Int32(arguments[0]), fd >= 0,
-          let logPath = env["HANDY_SERVER_LOG"], !logPath.isEmpty else { exit(0) }
+          let logPath = env["SOTTO_SERVER_LOG"], !logPath.isEmpty else { exit(0) }
     relayServerOutput(readFD: fd, logPath: logPath)
 }
 
@@ -1256,8 +1256,8 @@ func normalizeText(_ text: String) -> String {
     return out
 }
 
-/// 归一函数的最小单测入口：`handy-transcribe --normalize-selftest`。
-/// 纯函数，不碰模型 / 音频 / 网络；apps/handy/tests/normalize_test.sh 调它。
+/// 归一函数的最小单测入口：`sotto-transcribe --normalize-selftest`。
+/// 纯函数，不碰模型 / 音频 / 网络；apps/sotto/tests/normalize_test.sh 调它。
 func runNormalizeSelfTest() -> Never {
     let cases: [(String, String)] = [
         ("快遞。", "快递"),
@@ -1454,7 +1454,7 @@ func recoverTerms(_ text: [Character], terms: [String]) -> (String, [(String, St
 let inputURL = URL(fileURLWithPath: inputPath)
 let started = Date()
 let workDir = FileManager.default.temporaryDirectory
-    .appendingPathComponent("handy-transcribe-\(ProcessInfo.processInfo.processIdentifier)")
+    .appendingPathComponent("sotto-transcribe-\(ProcessInfo.processInfo.processIdentifier)")
 do {
     try FileManager.default.createDirectory(at: workDir, withIntermediateDirectories: true)
 } catch {
@@ -1559,9 +1559,9 @@ logEvent("request path=\(requestPath) segs=\(segments.count) audio_ms=\(Int(dura
     + "decode_ms=\(decodeMS) chars=\(text.count)")
 
 if writeClipboard {
-    let clip = handyDir + "/handy-clip"
+    let clip = sottoDir + "/sotto-clip"
     guard FileManager.default.isExecutableFile(atPath: clip) else {
-        fail("找不到 handy-clip（\(clip)）", exitUsage)
+        fail("找不到 sotto-clip（\(clip)）", exitUsage)
     }
     let process = Process()
     process.executableURL = URL(fileURLWithPath: clip)
@@ -1571,11 +1571,11 @@ if writeClipboard {
     do {
         try process.run()
     } catch {
-        fail("启动 handy-clip 失败：\(error.localizedDescription)", exitUsage)
+        fail("启动 sotto-clip 失败：\(error.localizedDescription)", exitUsage)
     }
     process.waitUntilExit()
     guard process.terminationStatus == 0 else {
-        fail("handy-clip 退出码 \(process.terminationStatus)", exitUsage)
+        fail("sotto-clip 退出码 \(process.terminationStatus)", exitUsage)
     }
 }
 
