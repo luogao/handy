@@ -136,11 +136,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func hotKeyPressed() {
         isHotKeyDown = true
+        // 按键到达的第一现场：这一步没有日志时，「没反应」到底是热键没送达
+        // 还是录音链路静默失败，从日志上分不出来。
+        logger.write(event: "hotkey_press", fields: [("state", "\(state)")])
         beginRecording(fromHotKey: true)
     }
 
     private func hotKeyReleased() {
         isHotKeyDown = false
+        logger.write(event: "hotkey_release", fields: [])
         finishRecording(reason: "released")
     }
 
