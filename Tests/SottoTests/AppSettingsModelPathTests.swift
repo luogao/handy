@@ -113,10 +113,32 @@ private func makeDefaults() -> (UserDefaults, String) {
 
 @Test func 未设置时用默认路径且不传model参数() {
     let plan = TranscribeService.modelPlan(customPath: nil, environment: [:],
-                                           home: "/Users/someone")
+                                           home: "/Users/someone", bundledModel: nil)
     #expect(plan.path == "/Users/someone/.cache/whisper.cpp/ggml-medium-q5_0.bin")
     #expect(!plan.passesModelArgument)
     #expect(plan.logLabel == "default")
+}
+
+/// 发行包里带着模型时，未设置也必须显式传 `--model`：CLI 的默认值是
+/// `~/.cache/…`，干净机器上不存在，不传就 exit 2（v0.1.0 的实际事故）。
+@Test func 内置模型存在时显式传model参数() {
+    let bundled = URL(fileURLWithPath: "/Applications/Sotto.app/Contents/Resources/models/ggml-medium-q5_0.bin")
+    let plan = TranscribeService.modelPlan(customPath: nil, environment: [:],
+                                           home: "/Users/someone", bundledModel: bundled)
+    #expect(plan.path == bundled.path)
+    #expect(plan.passesModelArgument)
+    #expect(plan.logLabel == "bundle")
+    #expect(TranscribeService.arguments(wavPath: "/tmp/a.wav", plan: plan)
+            == ["/tmp/a.wav", "--model", bundled.path])
+}
+
+@Test func 自定义路径优先于内置模型() {
+    let bundled = URL(fileURLWithPath: "/Applications/Sotto.app/Contents/Resources/models/ggml-medium-q5_0.bin")
+    let plan = TranscribeService.modelPlan(customPath: "~/models/mine.bin", environment: [:],
+                                           home: "/Users/someone", bundledModel: bundled)
+    // `~` 由 normalizeModelPath 用真实 home 展开，不吃 home 参数
+    #expect(plan.path == NSHomeDirectory() + "/models/mine.bin")
+    #expect(plan.passesModelArgument)
 }
 
 @Test func 设置后解析成自定义路径() {

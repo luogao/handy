@@ -217,10 +217,17 @@ final class TranscribeService {
     static func modelPlan(
         customPath: String?,
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        home: String = NSHomeDirectory()
+        home: String = NSHomeDirectory(),
+        bundledModel: URL? = SottoPaths.bundledModelPath()
     ) -> ModelPlan {
         if let custom = SottoPaths.normalizeModelPath(customPath) {
             return ModelPlan(path: custom, passesModelArgument: true, logLabel: custom)
+        }
+        // 发行包自带模型时必须显式 `--model`：CLI 的默认值是
+        // `~/.cache/whisper.cpp/ggml-medium-q5_0.bin`，干净机器上那个文件不存在，
+        // 不传参数会直接 exit 2，用户看到「模型文件未找到」——而模型就在 app 里。
+        if let bundledModel {
+            return ModelPlan(path: bundledModel.path, passesModelArgument: true, logLabel: "bundle")
         }
         let fallback = SottoPaths.defaultModelPath(environment: environment, home: home).path
         return ModelPlan(path: fallback, passesModelArgument: false, logLabel: "default")
@@ -233,6 +240,12 @@ final class TranscribeService {
             arguments.append(contentsOf: ["--model", model])
         }
         return arguments
+    }
+
+    /// plan → CLI 参数。`passesModelArgument` 为 true 时把 plan 的路径交给 CLI，
+    /// 否则完全交给 CLI 自己的默认值。
+    static func arguments(wavPath: String, plan: ModelPlan) -> [String] {
+        arguments(wavPath: wavPath, modelPath: plan.passesModelArgument ? plan.path : nil)
     }
 
     func transcribe(wavURL: URL) throws -> TranscribeResult {
@@ -252,7 +265,7 @@ final class TranscribeService {
 
         let process = Process()
         process.executableURL = executable
-        process.arguments = Self.arguments(wavPath: wavURL.path, modelPath: modelPath)
+        process.arguments = Self.arguments(wavPath: wavURL.path, plan: plan)
         process.environment = Self.childEnvironment(from: environment)
         let stdout = Pipe()
         let stderr = Pipe()
