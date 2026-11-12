@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sotto — 按住说话，松手出字。</title>
+<meta name="description" content="Sotto 是 macOS 菜单栏上的语音输入工具：按住 ⌃⌥H 说话，松手文字直接落在光标处。本地 whisper 转写，音频不出机器，不需要账号。">
+<meta property="og:title" content="Sotto — 按住说话，松手出字。">
+<meta property="og:description" content="macOS 菜单栏语音输入。本地转写，音频不上传，模型内置，装完即用。">
+<meta property="og:image" content="img/hero-bg.png">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="img/icon.png">
+<link rel="apple-touch-icon" href="img/apple-touch-icon.png">
+<style>
+  :root{
+    --bg:#141518; --bg2:#191a1e; --line:#2a2c32;
+    --fg:#eceef2; --dim:#9a9da6; --dim2:#6f727b; --amber:#e8a230;
+    --max:920px;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--fg);
+    font:400 17px/1.72 -apple-system,BlinkMacSystemFont,"SF Pro SC","PingFang SC","Hiragino Sans GB",system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  a{color:var(--fg); text-decoration:none; border-bottom:1px solid var(--line)}
+  a:hover{border-color:var(--amber)}
+  .wrap{max-width:var(--max); margin:0 auto; padding:0 28px}
+  code,kbd{font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.92em}
+  kbd{
+    display:inline-block; padding:1px 7px; border:1px solid #3a3d44; border-radius:6px;
+    background:#202127; color:#dfe2e8; font-size:.85em; line-height:1.6;
+  }
+
+  /* ── hero ── */
+  .hero{
+    position:relative; overflow:hidden;
+    border-bottom:1px solid var(--line);
+    background:#0f1013 url("img/hero-bg.png") center right/cover no-repeat;
+  }
+  .hero::after{content:""; position:absolute; inset:0;
+    background:linear-gradient(90deg,rgba(15,16,19,.97) 0%,rgba(15,16,19,.88) 42%,rgba(15,16,19,.35) 72%,rgba(15,16,19,.55) 100%);}
+  .hero .wrap{position:relative; z-index:1; padding-top:104px; padding-bottom:96px}
+  .icon{width:54px; height:54px; border-radius:13px; margin-bottom:30px; display:block}
+  h1{
+    margin:0 0 22px; font-size:clamp(34px,5.2vw,58px); line-height:1.16;
+    letter-spacing:-.02em; font-weight:600;
+  }
+  .lede{font-size:clamp(16px,1.6vw,19px); color:#c6c9d0; max-width:38em; margin:0 0 34px}
+  .lede b{color:var(--fg); font-weight:600}
+
+  .cmd{
+    display:inline-flex; align-items:center; gap:14px;
+    background:#0c0d0f; border:1px solid #313338; border-radius:11px;
+    padding:13px 18px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+    font-size:15px; color:#d7dae0;
+  }
+  .cmd .p{color:var(--amber)}
+  .cta{
+    display:inline-block; margin-left:14px; padding:13px 22px; border-radius:11px;
+    background:var(--amber); color:#1a1403; font-weight:600; border:0;
+    font-size:15.5px;
+  }
+  .cta:hover{background:#f2ae42}
+  .meta{margin-top:22px; color:var(--dim2); font-size:14.5px}
+  .meta span{margin-right:10px}
+
+  /* ── stats ── */
+  .stats{
+    display:grid; grid-template-columns:repeat(3,1fr); gap:1px;
+    background:var(--line); border-bottom:1px solid var(--line);
+  }
+  .stat{background:var(--bg); padding:34px 28px}
+  .stat .n{font-size:30px; font-weight:600; letter-spacing:-.02em; color:var(--fg)}
+  .stat .n em{font-style:normal; color:var(--amber)}
+  .stat .l{color:var(--dim2); font-size:14px; margin-top:6px}
+
+  /* ── sections ── */
+  section{padding:78px 0; border-bottom:1px solid var(--line)}
+  h2{margin:0 0 14px; font-size:clamp(23px,2.6vw,30px); letter-spacing:-.015em; font-weight:600}
+  .sub{color:var(--dim); margin:0 0 40px; max-width:40em}
+
+  .cmp{display:grid; gap:1px; background:var(--line); border:1px solid var(--line); border-radius:12px; overflow:hidden}
+  .cmp .row{display:grid; grid-template-columns:150px 1fr; background:var(--bg2)}
+  .cmp .k{padding:18px 20px; color:var(--dim2); font-size:14px; border-right:1px solid var(--line)}
+  .cmp .v{padding:18px 22px; font-size:15.5px; color:#d3d6dc}
+  .cmp .v.hl{color:var(--fg)}
+  .cmp .row:last-child .k{color:var(--amber); font-weight:600}
+
+  .grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:1px; background:var(--line); border:1px solid var(--line); border-radius:12px; overflow:hidden}
+  .card{background:var(--bg2); padding:26px 24px}
+  .card h3{margin:0 0 8px; font-size:16.5px; font-weight:600; letter-spacing:-.01em}
+  .card p{margin:0; color:var(--dim); font-size:14.5px; line-height:1.65}
+
+  .shots{display:grid; grid-template-columns:1fr 1fr; gap:22px; align-items:start; margin-top:34px}
+  .shots figure{margin:0}
+  .shots img{width:100%; height:auto; display:block; border-radius:12px}
+  .shots figcaption{color:var(--dim2); font-size:13.5px; margin-top:10px}
+
+  .installs{display:grid; gap:18px}
+  .inst{background:var(--bg2); border:1px solid var(--line); border-radius:12px; padding:24px}
+  .inst .tag{font-size:12.5px; letter-spacing:.08em; color:var(--amber); font-weight:600}
+  .inst h3{margin:8px 0 10px; font-size:17px}
+  .inst p{margin:0; color:var(--dim); font-size:14.5px}
+  .inst pre{
+    margin:12px 0 0; padding:12px 14px; background:#0c0d0f; border:1px solid #2c2e34;
+    border-radius:9px; overflow-x:auto; font-size:13.5px; color:#d7dae0;
+  }
+
+  details{border-top:1px solid var(--line); padding:20px 0}
+  details:first-of-type{border-top:0}
+  summary{cursor:pointer; font-weight:600; font-size:16px; list-style:none}
+  summary::-webkit-details-marker{display:none}
+  summary::before{content:"+"; color:var(--amber); margin-right:12px; font-weight:600}
+  details[open] summary::before{content:"−"}
+  details p{margin:12px 0 0; color:var(--dim); font-size:15px}
+
+  footer{padding:56px 0 72px; color:var(--dim2); font-size:14px}
+  footer a{color:var(--dim)}
+  .footlinks{margin-top:10px; display:flex; gap:22px; flex-wrap:wrap}
+
+  @media (max-width:720px){
+    .hero .wrap{padding-top:70px; padding-bottom:64px}
+    .stats{grid-template-columns:1fr}
+    .cmp .row{grid-template-columns:1fr}
+    .cmp .k{border-right:0; border-bottom:1px solid var(--line); padding-bottom:6px}
+    .shots{grid-template-columns:1fr}
+    .cmd{width:100%; overflow-x:auto}
+    .cta{margin:14px 0 0}
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <img class="icon" src="img/icon.png" alt="Sotto 图标">
+    <h1>按住说话，松手出字。</h1>
+    <p class="lede">
+      菜单栏常驻。按住 <kbd>⌃</kbd><kbd>⌥</kbd><kbd>H</kbd> 说话，松手，文字直接落进光标处——哪个窗口在前，就贴在哪个窗口。<b>转写在本机做，音频不出机器。</b>
+    </p>
+
+    <div>
+      <span class="cmd"><span class="p">$</span> brew install --cask luogao/tap/sotto</span>
+      <a class="cta" href="https://github.com/luogao/sotto/releases">下载 DMG</a>
+    </div>
+
+    <p class="meta">
+      <span>菜单栏常驻</span> <span>·</span> <span>macOS 13+</span> <span>·</span> <span>Apple Silicon</span> <span>·</span> <span>MIT 开源</span> <span>·</span> <span>模型内置</span>
+    </p>
+  </div>
+</header>
+
+<div class="stats">
+  <div class="stat"><div class="n">0.95<em>s</em></div><div class="l">6.5 秒语音的转写耗时（M4 实测）</div></div>
+  <div class="stat"><div class="n">0<em> 字节</em></div><div class="l">上传的音频数据，全流程离线</div></div>
+  <div class="stat"><div class="n">516<em>MB</em></div><div class="l">安装体积，模型已打包在内</div></div>
+</div>
+
+<section>
+  <div class="wrap">
+    <h2>不是又一个听写 app。</h2>
+    <p class="sub">
+      云端听写要联网、要账号、要等一段时间；系统自带的听写又绑死在输入框里。
+      Sotto 只想做一件事：任何地方按住就能说，松手文字就在那儿。
+    </p>
+
+    <div class="cmp">
+      <div class="row">
+        <div class="k">云端听写</div>
+        <div class="v">音频先上传，再等服务器返回。断网就用不了，说的话离开了机器。</div>
+      </div>
+      <div class="row">
+        <div class="k">系统听写</div>
+        <div class="v">只能对着输入框说，长句要等它慢慢出字，标点和断句都得忍着。</div>
+      </div>
+      <div class="row">
+        <div class="k">Sotto</div>
+        <div class="v hl">按住说，松手就出。音频只在本机走一趟，说完就没了。</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>六件事，都在菜单栏里。</h2>
+    <p class="sub">没有仪表盘首页，没有账号，没有引导流程。点开菜单就是全部。</p>
+
+    <div class="grid">
+      <div class="card"><h3>按住即说</h3><p>全局热键 <kbd>⌃⌥H</kbd>，任何 app 里都能用，不需要切窗口。</p></div>
+      <div class="card"><h3>松手即贴</h3><p>转写完直接写进光标位置，也留在剪贴板里，说错了随时重来。</p></div>
+      <div class="card"><h3>本地转写</h3><p>whisper.cpp + medium-q5_0 模型，全程在本机跑，不联网。</p></div>
+      <div class="card"><h3>零辅助功能权限</h3><p>热键走 Carbon，不申请「辅助功能」，不监听你的键盘。</p></div>
+      <div class="card"><h3>热词表</h3><p>人名、项目名、专业词写进 <code>terms.txt</code>，识别会跟着走。</p></div>
+      <div class="card"><h3>日志可查</h3><p>每次转写记时长、字数、模型路径，不记你说了什么。</p></div>
+    </div>
+
+    <div class="shots">
+      <figure>
+        <img src="img/menu.png" alt="Sotto 菜单栏菜单：按住 ⌃⌥H 说话、开始、设置、退出">
+        <figcaption>点开菜单就是全部，没有第二层。</figcaption>
+      </figure>
+      <figure>
+        <img src="img/settings.png" alt="Sotto 设置面板：全局热键、日志开关、模型路径">
+        <figcaption>热键、日志、模型路径，三样都在这一屏。</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>三种装法，一条命令最快。</h2>
+    <p class="sub">模型已经打进 app 里，装完就能说话，不需要再下载几百兆的文件。</p>
+
+    <div class="installs">
+      <div class="inst">
+        <div class="tag">01 / HOMEBREW</div>
+        <h3>一行命令</h3>
+        <p>装完菜单栏直接出现麦克风图标，首次使用允许麦克风即可。</p>
+        <pre>brew install --cask luogao/tap/sotto</pre>
+      </div>
+      <div class="inst">
+        <div class="tag">02 / RELEASES</div>
+        <h3>直接下载</h3>
+        <p>从 <a href="https://github.com/luogao/sotto/releases">Releases</a> 取最新 DMG，拖进「应用程序」。未公证，首次打开需右键 → 打开。</p>
+      </div>
+      <div class="inst">
+        <div class="tag">03 / SOURCE</div>
+        <h3>从源码</h3>
+        <p>Swift Package，无需 Xcode 工程文件：</p>
+        <pre>git clone https://github.com/luogao/sotto
+cd sotto &amp;&amp; ./scripts/fetch-model.sh &amp;&amp; ./scripts/bundle.sh</pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>你可能想问的六件事。</h2>
+
+    <details><summary>说的话会上传到哪儿吗？</summary>
+      <p>哪儿都不去。音频在本机转成 WAV 交给本地 whisper 进程，转写完录音就删。没有账号，没有遥测，代码是 MIT 开源的。</p>
+    </details>
+    <details><summary>要联网吗？</summary>
+      <p>转写不需要。只有第一次从 GitHub 下载安装包需要网络，装完断网也能一直用。</p>
+    </details>
+    <details><summary>Intel Mac 能用吗？</summary>
+      <p>暂时不行，只提供 Apple Silicon 构建。Intel 机器要自己从源码编，但没测过。</p>
+    </details>
+    <details><summary>为什么第一次打开被系统拦了？</summary>
+      <p>没买 Apple 开发者签名，app 是 ad-hoc 签名的。右键点图标 → 打开 → 再点「打开」即可，之后不再提示。用 Homebrew 装的话不会遇到这一步。</p>
+    </details>
+    <details><summary>能改热键吗？</summary>
+      <p>能。设置里点「重新录制」，按下新组合即生效，不用重启。</p>
+    </details>
+    <details><summary>Mac mini 没有麦克风怎么办？</summary>
+      <p>外接一个麦克风或用带麦的耳机。没有输入设备时 app 不会弹权限框，只会在日志里记一行 <code>event=error stage=mic code=no_device</code>。</p>
+    </details>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div>Sotto · MIT License · 用 Swift + whisper.cpp 写的 macOS 菜单栏工具</div>
+    <div class="footlinks">
+      <a href="https://github.com/luogao/sotto">GitHub</a>
+      <a href="https://github.com/luogao/sotto/releases">Releases</a>
+      <a href="https://github.com/luogao/sotto/blob/main/README.md">README</a>
+      <a href="https://github.com/luogao/sotto/issues">反馈</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
