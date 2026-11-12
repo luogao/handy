@@ -44,6 +44,16 @@ else
   echo "警告：找不到 $TRANSCRIBE_SRC，打包后的 app 将无法转写" >&2
 fi
 
+# 发行包把模型一起塞进来：用户下载 dmg 后不该再跑任何下载脚本。
+# 模型不进 git（514M），由 scripts/fetch-model.sh 拉到这里。
+if [ -f "models/ggml-medium-q5_0.bin" ]; then
+  mkdir -p "$APP/Contents/Resources/models"
+  cp "models/ggml-medium-q5_0.bin" "$APP/Contents/Resources/models/"
+  echo "内置模型: $(du -h "$APP/Contents/Resources/models/ggml-medium-q5_0.bin" | cut -f1)"
+else
+  echo "提示：没有 models/ggml-medium-q5_0.bin，打出来的包要靠用户自备模型" >&2
+fi
+
 # ad-hoc 签名：没有 Developer ID 也能本机双击。--force 覆盖 cp 之后失效的签名。
 codesign --force --sign - --timestamp=none "$APP" >/dev/null
 

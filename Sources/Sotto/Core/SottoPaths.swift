@@ -38,8 +38,23 @@ enum SottoPaths {
             return URL(fileURLWithPath: (value as NSString).expandingTildeInPath)
                 .standardizedFileURL
         }
+        // 发行包里模型跟着 app 走：安装目录下没有开发树、用户也没跑过下载脚本，
+        // 只认 ~/.cache 会让「下载即用」落空。内置模型优先，其次才是用户缓存。
+        if let bundled = bundledModelPath() {
+            return bundled
+        }
         return URL(fileURLWithPath: home)
             .appendingPathComponent(".cache/whisper.cpp/ggml-medium-q5_0.bin")
+    }
+
+    /// 打包进 `Contents/Resources/models/` 的模型；开发态（swift run）没有这个目录，
+    /// 返回 nil 就退回用户缓存路径。
+    static func bundledModelPath(bundle: Bundle = .main) -> URL? {
+        guard let url = bundle.url(forResource: "ggml-medium-q5_0",
+                                   withExtension: "bin",
+                                   subdirectory: "models"),
+              FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return url
     }
 
     /// 设置里存的是绝对路径：`~` 展开、去掉 `./` `../`，但**不做 URL 编码**，
