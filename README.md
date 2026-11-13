@@ -39,7 +39,7 @@ Sotto 只保留一个动作：**按住说话**。没有悬浮球、没有常驻�
 需要 macOS 13+、Xcode 命令行工具（`xcode-select --install`）。
 
 ```bash
-brew install whisper-cpp                 # 提供 whisper-server / whisper-cli
+brew install whisper-cpp                 # 只在打包机上需要：bundle 会把 whisper 引擎一起塞进 app
 
 git clone https://github.com/luogao/sotto.git
 cd sotto
@@ -51,6 +51,9 @@ cp -R build/Sotto.app /Applications/ && open /Applications/Sotto.app
 ```
 
 第一次按 <kbd>⌃</kbd><kbd>⌥</kbd><kbd>H</kbd> 会弹麦克风授权，点允许即可。
+
+打出来的 app 自带 whisper 引擎（whisper-cli / whisper-server + ggml backend）和模型，
+装到没有 Homebrew 的机器上也直接能用；`brew install whisper-cpp` 只是打包机的依赖。
 
 > 想换模型（`large-v3-turbo` 等）：转成 ggml 放进 `~/.cache/whisper.cpp/`，
 > 在「设置 › 模型」里选它。模型缺失和文件损坏会分别报不同的错，不会只丢一句「转写失败」。

@@ -364,16 +364,33 @@ final class TranscribeService {
 
     /// 从 Finder 双击起的 app 拿到的 PATH 是 launchd 的那份，通常不含 Homebrew
     /// 的 bin；sotto-transcribe 只在 PATH 里找 whisper-cli / whisper-server，
-    /// 不补这两个目录的话 GUI 里会一直报「找不到 whisper」（终端里却好好的）。
+    /// 不补目录的话 GUI 里会一直报「找不到 whisper」（终端里却好好的）。
+    ///
+    /// 发行包里带了 whisper，所以**包内 bin 放最前面**：干净机器上没有
+    /// Homebrew 也能转写，装了 Homebrew 的用户也不会被旧版本抢走。
     static func childEnvironment(from environment: [String: String]) -> [String: String] {
         var env = environment
         let fallback = "/usr/bin:/bin:/usr/sbin:/sbin"
         var entries = (env["PATH"] ?? fallback).split(separator: ":").map(String.init)
+        if let bundledBin = bundledBinDirectory()?.path, !entries.contains(bundledBin) {
+            entries.insert(bundledBin, at: 0)
+        }
+        // backend .so 和 whisper-* 同目录，ggml 自己会按「可执行文件所在目录」找；
+        // 不要设 GGML_BACKEND_PATH——那条路径是全量加载，实测会让 dev_init abort。
         for directory in ["/opt/homebrew/bin", "/usr/local/bin"] where !entries.contains(directory) {
             entries.append(directory)
         }
         env["PATH"] = entries.joined(separator: ":")
         return env
+    }
+
+    /// `Contents/Resources/bin`：sotto-transcribe 和 whisper-* 都住这儿。
+    static func bundledBinDirectory(bundle: Bundle = .main) -> URL? {
+        guard let url = bundle.resourceURL?.appendingPathComponent("bin") else { return nil }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else { return nil }
+        return url
     }
 
     private static func fileSize(_ url: URL) -> UInt64 {

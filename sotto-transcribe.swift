@@ -825,12 +825,14 @@ func prepareServer() -> Int? {
     do {
         let pid = try spawnDetached(["--internal-serve", String(port), modelPath, serverBin],
                                     log: serverLogFile)
-        let ready = waitForServer(port: port, pid: pid, timeout: 5.0)
+        // 冷启动要把 514MB 模型读进内存 + 初始化 Metal，5 秒不够（实测首启
+        // 5.0s 超时、第二次 0.9s 就绪）。给到 20 秒，超时才退回 CLI。
+        let ready = waitForServer(port: port, pid: pid, timeout: 20.0)
         let startMS = Int(Date().timeIntervalSince(spawnStarted) * 1000)
         guard ready else {
             terminate(pid: pid)
             logEvent("spawn_fail port=\(port) pid=\(pid) start_ms=\(startMS) reason=timeout")
-            fallbackToCLI("whisper-server 5 秒内没就绪")
+            fallbackToCLI("whisper-server 20 秒内没就绪")
             return nil
         }
         // 启动耗时只有就绪后才知道，所以这行写在 ready 前面、时间戳却是就绪时刻；

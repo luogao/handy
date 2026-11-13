@@ -38,8 +38,8 @@ import Testing
     #expect(plist["CFBundleName"] as? String == "Sotto")
     #expect(plist["CFBundleExecutable"] as? String == "Sotto")
     #expect(plist["CFBundleDisplayName"] as? String == "Sotto")
-    #expect(plist["CFBundleShortVersionString"] as? String == "0.1.0")
-    #expect(plist["CFBundleVersion"] as? String == "010")
+    #expect(plist["CFBundleShortVersionString"] as? String == "0.1.2")
+    #expect(plist["CFBundleVersion"] as? String == "012")
     #expect(plist["LSMinimumSystemVersion"] as? String == "13.0")
     #expect(plist["LSUIElement"] as? Bool == true)
     // P0 不申请权限，但文案要先在；P1 的授权弹窗直接用这一条。

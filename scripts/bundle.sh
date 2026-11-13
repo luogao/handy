@@ -54,6 +54,11 @@ else
   echo "提示：没有 models/ggml-medium-q5_0.bin，打出来的包要靠用户自备模型" >&2
 fi
 
+# whisper 引擎一起打包：模型在包里、引擎在用户机器上，永远「下载即用」不了。
+if [ -x scripts/bundle-whisper.sh ]; then
+  ./scripts/bundle-whisper.sh "$APP" || echo "警告：whisper 没打进去，用户仍需 brew install whisper-cpp" >&2
+fi
+
 # ad-hoc 签名：没有 Developer ID 也能本机双击。--force 覆盖 cp 之后失效的签名。
 codesign --force --sign - --timestamp=none "$APP" >/dev/null
 
